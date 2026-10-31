@@ -61,7 +61,7 @@ jobs:
           persist-credentials: false
       - name: Install Android toolchain
         run: |
-          sdkmanager "ndk;28.2.13676358" "build-tools;35.0.0"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" "build-tools;35.0.0"
           rustup target add "${{ matrix.target }}"
       - name: Check Android Rust code without building an APK
         run: python3 tools/android_build.py --abi "${{ matrix.abi }}" --check --public --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME_17_X64"
