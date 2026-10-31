@@ -67,30 +67,43 @@ pub(super) fn button(
     accent: bool,
 ) {
     let [x, y, w, h] = rect;
-    ui.rounded(
-        x,
-        y,
-        w,
-        h,
-        2.0,
-        if accent { color::ACCENT } else { color::RAISED },
-    );
+    if accent {
+        ui.block(
+            x,
+            y,
+            w,
+            h,
+            color::block::FACE,
+            color::block::FACE_BEVEL,
+            color::block::FACE_LIP,
+        );
+    } else {
+        ui.block(
+            x,
+            y,
+            w,
+            h,
+            color::block::BUTTON,
+            color::block::BUTTON_BEVEL,
+            color::block::LIP,
+        );
+    }
     let padding = (w * 0.12).clamp(4.0, 12.0);
     let base = if w < 80.0 { 13.0 } else { 16.0 };
     let font = if matches!(action, Action::Page(_)) {
-        (base * ((w - 2.0 * padding) / ui.measure(Face::Medium, base, label).max(1.0)).min(1.0))
+        (base * ((w - 2.0 * padding) / ui.measure(Face::Pixel, base, label).max(1.0)).min(1.0))
             .max(9.0)
     } else {
         base
     };
-    let label = ui.fit_text(Face::Medium, font, label, w - 2.0 * padding);
+    let label = ui.fit_text(Face::Pixel, font, label, w - 2.0 * padding);
     ui.text(
-        Face::Medium,
+        Face::Pixel,
         font,
         x + padding,
         y + 11.0,
         if accent {
-            color::ON_ACCENT
+            color::block::ON_FACE
         } else {
             color::TEXT
         },
@@ -107,29 +120,36 @@ fn toggle(
 ) {
     let [x, y, w, h] = rect;
     ui.text(
-        Face::Regular,
+        Face::Pixel,
         14.0,
         x,
         y + 11.0,
         color::TEXT,
         if on { "On" } else { "Off" },
     );
-    ui.rounded(
-        x + w - 52.0,
-        y + 8.0,
-        48.0,
-        24.0,
-        12.0,
-        if on { color::TEXT } else { color::HOVER },
-    );
-    ui.rounded(
-        x + w - if on { 26.0 } else { 50.0 },
-        y + 10.0,
-        20.0,
-        20.0,
-        10.0,
-        if on { color::BG } else { color::TEXT },
-    );
+    ui.well(x + w - 52.0, y + 8.0, 48.0, 24.0);
+    let knob_x = if on { x + w - 26.0 } else { x + w - 50.0 };
+    if on {
+        ui.block(
+            knob_x,
+            y + 10.0,
+            20.0,
+            20.0,
+            color::block::FACE,
+            color::block::FACE_BEVEL,
+            color::block::FACE_LIP,
+        );
+    } else {
+        ui.block(
+            knob_x,
+            y + 10.0,
+            20.0,
+            20.0,
+            color::block::BUTTON,
+            color::block::BUTTON_BEVEL,
+            color::block::LIP,
+        );
+    }
     targets.push(([x, y, w, h], action));
 }
 impl Launcher {
@@ -222,20 +242,27 @@ impl Launcher {
         let (w, h) = (ui.w, ui.h);
         let scale = ui.density / ui.batch.scale;
         ui.batch
-            .fill(&gui.atlas, 0.0, 0.0, w * scale, h * scale, color::BG);
+            .fill(&gui.atlas, 0.0, 0.0, w * scale, h * scale, color::block::PAGE);
+        let title_size = if w < 400.0 {
+            20.0
+        } else if w < 700.0 {
+            24.0
+        } else {
+            32.0
+        };
+        let title = ui.fit_text(
+            Face::Pixel,
+            title_size,
+            &format!("Horizon Android {}", crate::backend::VERSION),
+            w - 64.0,
+        );
         ui.text(
-            Face::Medium,
-            if w < 400.0 {
-                20.0
-            } else if w < 700.0 {
-                24.0
-            } else {
-                32.0
-            },
+            Face::Pixel,
+            title_size,
             32.0,
             if w < 700.0 { 12.0 } else { 28.0 },
             color::TEXT,
-            &format!("Horizon Android {}", crate::backend::VERSION),
+            &title,
         );
         button(
             &mut ui,
@@ -280,24 +307,17 @@ impl Launcher {
             let installing = self.worker.is_some();
             let progress = *self.install.lock().unwrap();
             let top = 160.0;
-            ui.text(
-                Face::Medium,
-                32.0,
-                32.0,
-                top,
-                color::TEXT,
-                if installing {
-                    "Getting your game ready"
-                } else if installed {
-                    "Ready to play"
-                } else {
-                    if compact {
-                        "Your Java worlds"
-                    } else {
-                        "Your Java worlds, on Android"
-                    }
-                },
-            );
+            let heading = if installing {
+                "Getting your game ready"
+            } else if installed {
+                "Ready to play"
+            } else if compact {
+                "Your Java worlds"
+            } else {
+                "Your Java worlds, on Android"
+            };
+            let heading = ui.fit_text(Face::Pixel, 32.0, heading, w - 64.0);
+            ui.text(Face::Pixel, 32.0, 32.0, top, color::TEXT, &heading);
             ui.text(
                 Face::Regular,
                 17.0,
@@ -358,9 +378,10 @@ impl Launcher {
                 };
                 let overall = (current as f32 + fraction.clamp(0.0, 1.0)) / 6.0;
                 let bar_y = h - 152.0;
-                ui.rounded(32.0, bar_y, w - 64.0, 4.0, 2.0, color::RAISED);
+                ui.rounded(32.0, bar_y, w - 64.0, 6.0, 0.0, color::block::WELL);
+                ui.border(32.0, bar_y, w - 64.0, 6.0, 0.0, color::block::OUTLINE);
                 if overall > 0.0 {
-                    ui.rounded(32.0, bar_y, (w - 64.0) * overall, 4.0, 2.0, color::ACCENT);
+                    ui.rounded(32.0, bar_y, (w - 64.0) * overall, 6.0, 0.0, color::ACCENT);
                 }
                 let detail = match progress.stage {
                     InstallStage::Download => format!(
@@ -568,9 +589,9 @@ impl Launcher {
                 if y < top || y + 70.0 > bottom {
                     continue;
                 }
-                let title = ui.fit_text(Face::Medium, 19.0, &p.title, w - 214.0);
+                let title = ui.fit_text(Face::Pixel, 19.0, &p.title, w - 214.0);
                 let summary = ui.fit_text(Face::Regular, 14.0, &p.summary, w - 214.0);
-                ui.text(Face::Medium, 19.0, 32.0, y, color::TEXT, &title);
+                ui.text(Face::Pixel, 19.0, 32.0, y, color::TEXT, &title);
                 ui.text(Face::Regular, 14.0, 32.0, y + 29.0, color::MUTED, &summary);
                 if let Some(state) = download {
                     ui.text(Face::Medium, 16.0, w - 150.0, y + 12.0, color::TEXT, &state);
@@ -716,12 +737,12 @@ impl Launcher {
                         continue;
                     }
                     let title = ui.fit_text(
-                        Face::Medium,
+                        Face::Pixel,
                         19.0,
                         &item.title,
                         if compact { w - 64.0 } else { w - 364.0 },
                     );
-                    ui.text(Face::Medium, 19.0, 32.0, y, color::TEXT, &title);
+                    ui.text(Face::Pixel, 19.0, 32.0, y, color::TEXT, &title);
                     ui.text(
                         Face::Regular,
                         14.0,
@@ -1030,8 +1051,8 @@ impl Launcher {
             let height = bottom - top;
             let thumb = (height * height / (height + maximum)).max(20.0).min(height);
             let y = top + (height - thumb) * (scroll / maximum).clamp(0.0, 1.0);
-            ui.rounded(w - 12.0, top, 4.0, height, 2.0, color::BORDER);
-            ui.rounded(w - 12.0, y, 4.0, thumb, 2.0, color::MUTED);
+            ui.rounded(w - 12.0, top, 4.0, height, 0.0, color::BORDER);
+            ui.rounded(w - 12.0, y, 4.0, thumb, 0.0, color::MUTED);
         }
         let caret_visible = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1066,7 +1087,7 @@ impl Launcher {
         if let Some(index) = self.focus
             && let Some(([x, y, w, h], _)) = self.targets.get(index)
         {
-            ui.border(*x - 2.0, *y - 2.0, *w + 4.0, *h + 4.0, 2.0, color::TEXT);
+            ui.border(*x - 2.0, *y - 2.0, *w + 4.0, *h + 4.0, 0.0, color::TEXT);
             self.cursor = (
                 f64::from((x + w / 2.0) * ui.density),
                 f64::from((y + h / 2.0) * ui.density),
@@ -1088,7 +1109,7 @@ impl Launcher {
                     *y,
                     *w,
                     *h,
-                    2.0,
+                    0.0,
                     horizon_client::hud::rgba(255, 255, 255, 48),
                 );
             }
@@ -1104,7 +1125,7 @@ impl Launcher {
                 *y,
                 *w,
                 *h,
-                2.0,
+                0.0,
                 horizon_client::hud::rgba(255, 255, 255, 48),
             );
         }

@@ -175,10 +175,11 @@ impl Login {
         let h = (ui.h - 24.0).min(550.0);
         let x = (ui.w - w) / 2.0;
         let y = (ui.h - h) / 2.0;
-        ui.rounded(x, y, w, h, 8.0, color::BG);
+        ui.rounded(x - 2.0, y - 2.0, w + 4.0, h + 4.0, 0.0, color::block::OUTLINE);
+        ui.rounded(x, y, w, h, 0.0, color::block::PANEL);
         if editing_name {
             ui.text(
-                Face::Medium,
+                Face::Pixel,
                 24.0,
                 x + 20.0,
                 y + 20.0,

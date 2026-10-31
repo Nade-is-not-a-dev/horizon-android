@@ -263,8 +263,8 @@ impl Chooser {
     pub fn draw(&mut self, ui: &mut Ui, targets: &mut Vec<([f32; 4], Action)>) {
         let (w, h) = (ui.w, ui.h);
         targets.clear();
-        ui.rounded(0.0, 0.0, w, h, 0.0, color::BG);
-        ui.text(Face::Medium, 28.0, 32.0, 35.0, color::TEXT, self.title);
+        ui.rounded(0.0, 0.0, w, h, 0.0, color::block::PAGE);
+        ui.text(Face::Pixel, 28.0, 32.0, 35.0, color::TEXT, self.title);
         ui.text(Face::Regular, 15.0, 32.0, 85.0, color::MUTED, self.help);
         if let Some(device) = &self.device {
             ui.text(Face::Regular, 13.0, 32.0, 111.0, color::MUTED, device);
@@ -280,12 +280,12 @@ impl Chooser {
             if y < top || y + 76.0 > bottom {
                 continue;
             }
-            ui.rounded(34.0, y + 10.0, 22.0, 22.0, 11.0, color::TEXT);
-            ui.rounded(36.0, y + 12.0, 18.0, 18.0, 9.0, color::BG);
+            ui.rounded(34.0, y + 10.0, 22.0, 22.0, 0.0, color::TEXT);
+            ui.rounded(36.0, y + 12.0, 18.0, 18.0, 0.0, color::block::PAGE);
             if *selected {
-                ui.rounded(40.0, y + 16.0, 10.0, 10.0, 5.0, color::TEXT);
+                ui.rounded(40.0, y + 16.0, 10.0, 10.0, 0.0, color::TEXT);
             }
-            ui.text(Face::Medium, 19.0, 80.0, y + 8.0, color::TEXT, label);
+            ui.text(Face::Pixel, 19.0, 80.0, y + 8.0, color::TEXT, label);
             ui.text(Face::Regular, 14.0, 80.0, y + 40.0, color::MUTED, detail);
             ui.rounded(32.0, y + 75.0, w - 64.0, 1.0, 0.0, color::BORDER);
             targets.push(([32.0, y, w - 64.0, 76.0], *action));
