@@ -36,6 +36,12 @@ jobs:
           unzip -q /tmp/gradle-8.14-bin.zip -d "$HOME/gradle"
       - name: Prepare pinned vanilla inputs and engine tables
         run: python3 tools/android_prepare.py
+      - name: Restore the stable signing key
+        env:
+          ANDROID_DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          mkdir -p .local/android
+          echo "$ANDROID_DEBUG_KEYSTORE_B64" | base64 --decode > .local/android/debug.keystore
       - name: Build the arm64 APK
         run: >-
           python3 tools/android_build.py --abi arm64-v8a
