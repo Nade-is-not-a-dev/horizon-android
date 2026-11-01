@@ -41,10 +41,15 @@ fn terrain_shader(gl: bool) -> std::borrow::Cow<'static, str> {
         .find("fn sprite_level(")
         .expect("terrain level function");
     let end = level + source[level..].find("\n}\n").expect("terrain level end") + 3;
+    let rgss = source
+        .find("fn sample_rgss(")
+        .expect("terrain RGSS function");
+    let rgss_end = rgss + source[rgss..].find("\n}\n").expect("terrain RGSS end") + 3;
     let mut output = String::with_capacity(source.len() + 200);
     output.push_str(&source[..start]);
     output.push_str(include_str!("gfx/terrain_gles.wgsl.inc"));
-    output.push_str(&source[end..]);
+    output.push_str(&source[end..rgss]);
+    output.push_str(&source[rgss_end..]);
     std::borrow::Cow::Owned(output)
 }
 
@@ -101,6 +106,7 @@ mod frame_timing;
 
 mod frame_gen;
 mod hdr;
+pub use hdr::Calibration as HdrCalibration;
 pub mod lightning;
 mod lod;
 mod native_material;
@@ -1295,6 +1301,14 @@ async fn open_backend(
         limits.max_texture_array_layers,
     ));
     let desc = wgpu::DeviceDescriptor {
+        // Mobile drivers can spend hundreds of milliseconds reserving a new
+        // 128-256 MiB pool block. This changes allocation granularity, not
+        // resource limits, shader features, texture quality or geometry.
+        memory_hints: if cfg!(target_os = "android") {
+            wgpu::MemoryHints::MemoryUsage
+        } else {
+            wgpu::MemoryHints::Performance
+        },
         label: Some("Horizon device"),
         required_features: features,
         required_limits: limits,
@@ -1363,6 +1377,19 @@ impl Renderer {
             .values()
             .map(|tile| u64::from(tile.mesh.solid + tile.mesh.translucent))
             .sum()
+    }
+    /// Tiles and quads of the far terrain tiles with GPU buffers, by level.
+    pub fn lod_levels(&self) -> Vec<[u64; 2]> {
+        let mut levels = Vec::new();
+        for (key, tile) in &self.lods {
+            let level = usize::from(key.level);
+            if levels.len() <= level {
+                levels.resize(level + 1, [0, 0]);
+            }
+            levels[level][0] += 1;
+            levels[level][1] += u64::from(tile.mesh.solid + tile.mesh.translucent);
+        }
+        levels
     }
     /// Bytes of the section vertex arena's buffers, and of the vertices
     /// resident sections hold in them.
@@ -2392,8 +2419,9 @@ impl Renderer {
             CRUMBLING_BLEND,
             false,
         );
-        // RenderPipelines.ENTITY_SHADOW: translucent, depth test without
-        // writes. The quads lie exactly on the block tops like vanilla's, but
+        // RenderPipelines.ENTITY_SHADOW: translucent, back-face culled, depth
+        // test without writes. The quads lie exactly on the block tops like
+        // vanilla's, facing +Y so looking up from below culls them, but
         // terrain and shadows are separate draw paths, so their fp32 depth
         // interpolations disagree by a few dozen ulps of the fragment depth
         // and the shadow's rim z-fights with the block top (speckle that
@@ -2403,7 +2431,7 @@ impl Renderer {
         // the feet.
         let shadow_blob_pipeline = entity_pipeline_with(
             "Entity shadows",
-            None,
+            Some(wgpu::Face::Back),
             false,
             wgpu::CompareFunction::GreaterEqual,
             wgpu::DepthBiasState {
@@ -3845,7 +3873,13 @@ impl Renderer {
     ) {
         surface.configure(device, config);
         if let Some(hdr) = hdr {
-            horizon_hdr::set_metadata(device, surface, hdr.paper_white, hdr.peak, hdr.black);
+            horizon_hdr::set_metadata(
+                device,
+                surface,
+                hdr.paper_white,
+                hdr.declared_peak(),
+                hdr.black,
+            );
         }
     }
     fn configure_surface(&self) {
@@ -3858,9 +3892,29 @@ impl Renderer {
             );
         }
     }
+    /// HDR calibration's test picture (`crate::hdr_calibration`) while it runs, else None.
+    pub fn set_hdr_calibration(&mut self, calibration: Option<HdrCalibration>) {
+        let Some(hdr) = &mut self.hdr else {
+            return;
+        };
+        if hdr.calibration == calibration {
+            return;
+        }
+        let declared = hdr.declared_peak();
+        hdr.calibration = calibration;
+        if hdr.declared_peak() != declared {
+            self.send_hdr_metadata();
+        }
+    }
     fn send_hdr_metadata(&self) {
         if let (Some(surface), Some(hdr)) = (&self.surface, &self.hdr) {
-            horizon_hdr::set_metadata(&self.device, surface, hdr.paper_white, hdr.peak, hdr.black);
+            horizon_hdr::set_metadata(
+                &self.device,
+                surface,
+                hdr.paper_white,
+                hdr.declared_peak(),
+                hdr.black,
+            );
         }
     }
     /// The swapchain's configuration: `config` (what every pipeline draws in), or
@@ -3927,7 +3981,8 @@ impl Renderer {
                 DisplayWatch::default()
             };
             let format = self.config.format.remove_srgb_suffix();
-            self.hdr = output.map(|output| hdr::Hdr::new(&self.device, format, output));
+            self.hdr =
+                output.map(|output| hdr::Hdr::new(&self.device, &self.queue, format, output));
             self.configure_surface();
             match output {
                 Some(output) => log::info!(
@@ -4052,9 +4107,13 @@ impl Renderer {
     /// stages' labels; on an error the pack that ran keeps running.
     pub fn set_native_shader_pack(
         &mut self,
-        pack: Option<(horizon_shader_api::Report, Vec<(String, f64)>)>,
+        pack: Option<(
+            horizon_shader_api::Report,
+            Vec<(String, f64)>,
+            Vec<(u32, u32)>,
+        )>,
     ) -> std::result::Result<Vec<String>, String> {
-        let Some((report, constants)) = pack else {
+        let Some((report, constants, sprite_tags)) = pack else {
             self.native = None;
             return Ok(Vec::new());
         };
@@ -4063,6 +4122,7 @@ impl Renderer {
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
             sprites: self.terrain_sprites,
             format: self.config.format.remove_srgb_suffix(),
+            sprite_tags: &sprite_tags,
         };
         let (pack, labels) =
             native_pack::NativePack::new(&self.device, &terrain, report, &constants)?;
@@ -6462,7 +6522,9 @@ impl Renderer {
         }
         let submission = crate::spans::time("submit", || self.queue.submit([commands]));
         #[cfg(target_os = "android")]
-        if first_frame && let Some(startup) = self.startup.take() {
+        // Reused devices start with FirstFrame::Drawn too; their new renderer
+        // still has a startup marker that must complete after its first submit.
+        if let Some(startup) = self.startup.take() {
             self.queue
                 .on_submitted_work_done(move || startup.complete());
         }
@@ -6851,6 +6913,7 @@ mod tests {
         assert_eq!(super::terrain_shader(false), include_str!("terrain.wgsl"));
         let source = super::terrain_shader(true);
         assert!(!source.contains("switch layer / SPRITE_SPLIT"));
+        assert!(!source.contains("uv + offsets[i] * pixel"));
         for index in 0..7 {
             assert!(source.contains(&format!("array_index == {index}u")));
         }

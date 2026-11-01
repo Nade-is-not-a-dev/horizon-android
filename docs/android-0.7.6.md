@@ -2,7 +2,7 @@
 
 This update targets touch controls, initial menu navigation and diagnostic recording.
 
-- Optional **Swap hands button**, off by default. It uses the normal swap-hands action and supports the layout editor.
+- Optional **Swap hands button**, off by default. Its factory position is beside Inventory in landscape and portrait, mirrored for left-handed controls. Customized placements are preserved. Swap, Shield and custom text buttons share the same default frame and visible held feedback; custom artwork remains supported.
 - **Raise shield with: Sneak / Button**. The separate button appears when a blocking item is available. Shield input selects the blocking hand without consuming the main-hand item or interacting with a targeted block.
 - Tap-control schemes show a crosshair for bows, crossbows, tridents and throwable items. Their use gestures aim through the center; other items retain touch targeting.
 - **Horizontal sensitivity** and **Vertical sensitivity** calibrate camera input independently. Equal physical drag distances now produce equal default turns on both axes, including portrait screens.
@@ -11,7 +11,7 @@ This update targets touch controls, initial menu navigation and diagnostic recor
 - Hardware D-pad navigation works in the initial title menu before the full game loads. Focus acquisition retries after widgets become available.
 - GPU profiling and performance recording share one report session. Both launcher controls use the same button style. Reports include the requested profiling mode and whether encoder timestamps are supported; unsupported hardware cannot provide these stage timings.
 - Installation cleanup waits for active resource preparation to finish; the final asset index is saved from verified memory rather than reopened from Android’s evictable cache. This prevents a concurrent startup cleanup from deleting files needed by a reinstall (#30). The original device report does not include a log, so a clean installation on that affected device still needs verification.
-- Stable upstream history merged through `c3905131b` (717 incoming commits, including merge history): rendering, chunk work, resource packs, gameplay, network and mod API changes. Android input, presentation bounds, upload budgets and sandbox `.hmod` support are retained.
+- Stable upstream history merged through `c0b65f1d2` (571 additional incoming commits after RC1, including merge history): rendering, chunk work, resource packs, gameplay, network and mod API changes. Android input, presentation bounds, upload budgets and sandbox `.hmod` support are retained.
 
 Native `.hnmod` compilation on Android remains unsupported. Java Fabric, Forge and NeoForge mods are not supported.
 
@@ -32,6 +32,18 @@ verification on the originally affected phone is still required.
 - OpenGL ES selection also applies to the launcher. An interrupted first Vulkan frame triggers OpenGL ES recovery on the next launch, with an explanatory status (#38). This does not identify or repair every vendor-driver crash.
 - GLES sprite selection preserves the newly added texture-filtering functions; assembled shader validation and DirectX translation pass. The storage probe follows the relocated file-lock module.
 - Fireworks no longer enable the automatic projectile crosshair. Swap hands moves away from Sprint; only the original factory placement is migrated.
+
+## Follow-up upstream integration
+
+The additional 571 incoming commits include SRV handshake corrections, player saving,
+movement/attack ordering, safer archive reading, item/model fixes and server-side
+resource-allocation improvements. Android keeps sandboxed code `.hmod` support and
+now validates upstream content-only `.hmod` packages with the shared package parser.
+Native source `.hnmod` compilation remains unsupported.
+
+The new boot-renderer interface and ZIP 9 API were adapted explicitly for Android.
+Audio-device discovery remains off-thread; upstream device fingerprints reduce
+unnecessary queries. Upstream deployment workflows remain disabled.
 
 ## Crash diagnostics
 
@@ -55,7 +67,7 @@ See [diagnostic collection and limitations](android-diagnostics.md).
 
 ## Validation
 
-Local checks passed: 2 execution-role/player save tests, 44 touch tests (including layout migration and per-axis calibration), 8 installer tests, 5 crash-diagnostic tests, 9 performance/timing tests, 27 content tests (one fixture-dependent test skipped), 10 audio tests, 19 GPU tests, 26 renderer/shader tests and a standalone storage-probe build, 13 Android tooling tests, ARM64 Clippy and ARMv7 cargo check. Public-tree and whitespace checks passed.
+Local checks passed: 2 execution-role/player save tests, 45 touch tests (including layout migration and per-axis calibration), 8 installer tests, 5 crash-diagnostic tests, 9 performance/timing tests, 27 content tests (one fixture-dependent test skipped), 18 audio tests, 19 GPU tests, 26 renderer/shader tests and a standalone storage-probe build, 13 Android tooling tests, ARM64 Clippy and ARMv7 cargo check. Public-tree and whitespace checks passed.
 
 The change is a release candidate until the device checklist below passes. Local source tests do not establish performance or compatibility on every phone.
 
@@ -63,11 +75,70 @@ See [the test checklist](android-0.7.6-testing.md).
 
 ## Post-RC1 allocator candidate
 
-Phone reports from RC1 show frame-thread `arena_buffer_create` spikes of 799.5 ms,
-571.0 ms and 364.4 ms. These are nested inside geometry upload, not evidence of
-CPU time spent in diagnostic serialization. Android arena pages now stop normal
-growth at 8 MiB rather than repeatedly growing/copying buffers toward 256 MiB.
-Large single meshes retain the original hardware limit. Desktop allocation policy
-is unchanged. Twenty GPU tests pass, including range/data preservation across
-bounded pages and a larger single mesh. Phone FPS and allocator-stall improvement
-remain unverified; this is not a benchmark claim.
+RC1 phone reports contain frame-thread `arena_buffer_create` spikes of 799.5 ms,
+571.0 ms and 364.4 ms, nested inside geometry upload. Android now uses wgpu's
+`MemoryUsage` allocation policy and an 8 MiB soft ceiling for normal terrain-page
+growth. Large single meshes retain the hardware limit. Shader features, texture
+quality and geometry are unchanged; desktop allocation policy is unchanged.
+
+On an Adreno 710 tablet in Vulkan Compatibility at 2560×1600, Fancy and 12 chunks,
+sequential runs of an isolated test world gave these results:
+
+| Build | Maximum terrain-buffer creation | Reserved GPU memory after loading |
+| --- | --- | --- |
+| 0.7.5 | 578 ms | 1,024 MiB |
+| 0.7.6 RC1 | 608 ms; 318 ms in a later return run | 1,024 MiB |
+| Allocator candidate | 44 ms; 153 ms in a later run | approximately 548 MiB |
+
+The scene was capped at 60 FPS; run medians were approximately 58.5–60 FPS.
+These are individual sequential runs with audio disabled, not a phone benchmark
+or proof of higher uncapped FPS. Mobs and time were not frozen in these loading
+runs. Phone verification and older-driver compatibility remain required.
+
+Short separate uncapped sky-view runs with recording off, recording on, and CPU/GPU
+recording together did not reproduce the long allocation stalls. The combined
+report contained all three GPU stages. This does not establish zero diagnostic
+overhead; recording and GPU profiling remain opt-in.
+
+Also fixed a stale Vulkan startup marker when a renderer reuses a device. Its
+completion is now scheduled after that renderer's first submission even when
+first-device startup logging has already finished. Two consecutive tablet launches
+retained Vulkan Compatibility and cleared the marker.
+
+Validation: the existing 20 arena/render GPU tests, a GPU timestamp test with
+`MemoryUsage`, the startup-marker ordering test, an optimized ARM64 build and
+ARM64 Clippy passed. The Fujitsu device was offline during the allocator follow-up; its legacy
+GLES investigation is recorded below.
+
+## Legacy Adreno GLES follow-up
+
+Adreno 304 with driver V@269 crashes during terrain-program linking when RGSS
+indexes a local four-element offset array. The GLES variant now spells out the
+same four samples in the same accumulation order. Filtering modes, sample
+positions and mip blending are preserved; Vulkan WGSL is unchanged.
+
+An isolated native EGL probe reproduced SIGSEGV with the original shader and
+linked the rewritten version successfully with one and eight sprite arrays.
+The GLES source/entrypoint validation test also passes. An optimized ARMv7
+private build on the F-03L now enters the title screen and an isolated world;
+physical D-pad input activates a menu item and moves the player.
+
+F-03L compatibility is still incomplete: terrain appears as thin or fragmented
+geometry. Disabling sky, fog and cave culling, or explicitly rebasing section
+instance bindings, did not resolve it. The unhelpful binding experiment was
+reverted. These tests establish the shader-link crash fix, not correct world
+rendering or improved FPS. The main player application and its data were not used.
+
+## Legacy GPU release limitation
+
+Older OpenGL ES GPUs may display transparent or fragmented terrain. This is
+confirmed on the Fujitsu F-03L (Adreno 304, driver V@269), including the 0.7.5
+baseline. The shader-link crash fix allows startup but does not fix terrain
+rendering. ARMv7 availability does not imply that every legacy GPU is supported.
+The normalized-vertex and simplified-fragment experiments were not retained.
+
+On Android, Video Settings > Graphics API is now read-only and displays the
+backend selected in launcher Setup. Desktop backend selection is unchanged.
+
+For this candidate the upstream base stays at c0b65f1d2. The later 646 commits
+through f2b9a33b4 are pending Android validation rather than included in the release.
