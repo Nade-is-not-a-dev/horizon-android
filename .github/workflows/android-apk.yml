@@ -54,3 +54,80 @@ jobs:
           path: .local/android/apk/arm64-v8a/*.apk
           if-no-files-found: error
           retention-days: 7
+  notify:
+    needs: apk
+    if: always() && needs.apk.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RESULT: ${{ needs.apk.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Send the result summary to Telegram
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets are not set; skipping the notification."
+            exit 0
+          fi
+          head_sha="${{ github.sha }}"
+          short="${head_sha:0:9}"
+          prev=$(gh api "repos/${{ github.repository }}/actions/workflows/android-apk.yml/runs?per_page=10" \
+            --jq "[.workflow_runs[] | select(.status == \"completed\" and .head_sha != \"$head_sha\")][0].head_sha // empty")
+          changes=""
+          if [ -n "$prev" ]; then
+            changes=$(gh api "repos/${{ github.repository }}/compare/$prev...$head_sha" \
+              --jq '.commits[] | .commit.message | split("\n")[0]' 2>/dev/null | head -25 | sed 's/^/- /' || true)
+          fi
+          if [ -z "$changes" ]; then
+            changes=$(gh api "repos/${{ github.repository }}/commits/$head_sha" --jq '.commit.message' | head -1 | sed 's/^/- /')
+          fi
+          changes=$(printf '%s' "$changes" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+          if [ "$RESULT" = "success" ]; then
+            status="✅ <b>Build APK berhasil</b>"
+          else
+            status="❌ <b>Build APK gagal</b> ($RESULT)"
+          fi
+          text=$(printf '%s\nBranch: <code>%s</code>\nCommit: <code>%s</code>\n\n<b>Perubahan:</b>\n%s' \
+            "$status" "${{ github.ref_name }}" "$short" "$changes")
+          jq -n --arg chat "$TELEGRAM_CHAT_ID" --arg text "$text" --arg url "$RUN_URL" \
+            '{chat_id: $chat, text: $text, parse_mode: "HTML",
+              reply_markup: {inline_keyboard: [[{text: "📦 Buka artefak", url: $url}]]}}' \
+            | curl -sS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+                -H 'Content-Type: application/json' -d @- > /dev/null
+          echo "Summary sent."
+      - name: Send the APK itself to Telegram
+        if: needs.apk.result == 'success'
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            exit 0
+          fi
+          gh run download "${{ github.run_id }}" -n horizon-android-arm64-apk -D apk
+          file=$(ls apk/*.apk | head -1)
+          short="${{ github.sha }}"
+          short="${short:0:9}"
+          size=$(stat -c%s "$file")
+          if [ "$size" -gt 49000000 ]; then
+            resp='{"ok":false,"description":"file exceeds the 50 MB Bot API limit"}'
+          else
+            resp=$(curl -sS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument" \
+              -F chat_id="$TELEGRAM_CHAT_ID" -F document=@"$file" \
+              -F caption="Horizon Android (arm64) - $short")
+          fi
+          if printf '%s' "$resp" | jq -e '.ok' > /dev/null; then
+            echo "APK sent to Telegram."
+          else
+            err=$(printf '%s' "$resp" | jq -r '.description // "unknown error"')
+            text=$(printf '⚠️ APK gagal di upload: %s\nSilahkan download dengan link dibawah:\n%s' "$err" "$RUN_URL")
+            jq -n --arg chat "$TELEGRAM_CHAT_ID" --arg text "$text" --arg url "$RUN_URL" \
+              '{chat_id: $chat, text: $text,
+                reply_markup: {inline_keyboard: [[{text: "📦 Buka artefak", url: $url}]]}}' \
+              | curl -sS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+                  -H 'Content-Type: application/json' -d @- > /dev/null
+            echo "APK upload failed ($err); fallback link sent."
+          fi
