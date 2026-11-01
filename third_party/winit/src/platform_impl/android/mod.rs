@@ -490,10 +490,27 @@ impl<T: 'static> EventLoop<T> {
                         self.mouse = mouse_state::MouseState::default();
                         return InputStatus::Handled;
                     };
+                    // Captured (relative) motion arrives batched: Android
+                    // coalesces samples between dispatches and the extras
+                    // ride along as the event's history. Those samples are
+                    // deltas, so the event's full motion is their sum plus
+                    // the current sample; reading only the current one
+                    // drops movement whenever dispatch lags, which makes
+                    // mouse look lose distance unevenly (jitter).
+                    let (x, y) = if source == Source::MouseRelative {
+                        let (mut x, mut y) = (f64::from(pointer.x()), f64::from(pointer.y()));
+                        for past in pointer.history() {
+                            x += f64::from(past.x());
+                            y += f64::from(past.y());
+                        }
+                        (x, y)
+                    } else {
+                        (f64::from(pointer.x()), f64::from(pointer.y()))
+                    };
                     let sample = mouse_state::Sample {
                         action: motion_event.action().into(),
-                        x: f64::from(pointer.x()),
-                        y: f64::from(pointer.y()),
+                        x,
+                        y,
                         buttons: motion_event.button_state().0,
                         wheel: (
                             pointer.axis_value(Axis::Hscroll),
