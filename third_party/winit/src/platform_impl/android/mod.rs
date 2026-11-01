@@ -493,15 +493,28 @@ impl<T: 'static> EventLoop<T> {
                     // Captured (relative) motion arrives batched: Android
                     // coalesces samples between dispatches and the extras
                     // ride along as the event's history. Those samples are
-                    // deltas, so the event's full motion is their sum plus
-                    // the current sample; reading only the current one
-                    // drops movement whenever dispatch lags, which makes
-                    // mouse look lose distance unevenly (jitter).
+                    // deltas carried on the relative axes — the historical
+                    // X/Y coordinates do not hold the relative motion — so
+                    // the event's full motion is the sum of the historical
+                    // relative axis values plus the current one. Reading
+                    // only the current sample drops movement whenever
+                    // dispatch lags, which makes mouse look lose distance
+                    // unevenly (jitter).
                     let (x, y) = if source == Source::MouseRelative {
-                        let (mut x, mut y) = (f64::from(pointer.x()), f64::from(pointer.y()));
+                        // The current sample prefers its relative axis and
+                        // falls back to the position when the axis is
+                        // silent, as other Android launchers do.
+                        let axis = |axis: Axis, position: f32| {
+                            let value = pointer.axis_value(axis);
+                            if value != 0.0 { value } else { position }
+                        };
+                        let (mut x, mut y) = (
+                            f64::from(axis(Axis::RelativeX, pointer.x())),
+                            f64::from(axis(Axis::RelativeY, pointer.y())),
+                        );
                         for past in pointer.history() {
-                            x += f64::from(past.x());
-                            y += f64::from(past.y());
+                            x += f64::from(past.axis_value(Axis::RelativeX));
+                            y += f64::from(past.axis_value(Axis::RelativeY));
                         }
                         (x, y)
                     } else {
