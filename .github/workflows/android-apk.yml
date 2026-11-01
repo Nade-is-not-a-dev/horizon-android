@@ -1,0 +1,50 @@
+name: Android APK (arm64)
+
+# Manual build of a tryable arm64 APK from this branch: prepares the pinned
+# vanilla engine tables, compiles the Rust client and packages the APK with
+# Gradle. The APK is uploaded as a workflow artifact; nothing is released.
+on:
+  workflow_dispatch:
+    inputs:
+      cargo_jobs:
+        description: "Parallel Rust codegen jobs"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      HORIZON_TELEMETRY_URL: "off"
+      CARGO_BUILD_JOBS: ${{ inputs.cargo_jobs }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install Android toolchain
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" "build-tools;35.0.0" "platforms;android-35"
+          rustup target add aarch64-linux-android
+      - name: Install Gradle 8.14
+        run: |
+          curl -sL -o /tmp/gradle-8.14-bin.zip https://services.gradle.org/distributions/gradle-8.14-bin.zip
+          unzip -q /tmp/gradle-8.14-bin.zip -d "$HOME/gradle"
+      - name: Prepare pinned vanilla inputs and engine tables
+        run: python3 tools/android_prepare.py
+      - name: Build the arm64 APK
+        run: >-
+          python3 tools/android_build.py --abi arm64-v8a
+          --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME_17_X64"
+          --gradle "$HOME/gradle/gradle-8.14/bin/gradle"
+      - name: Upload the APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: horizon-android-arm64-apk
+          path: .local/android/apk/arm64-v8a/*.apk
+          if-no-files-found: error
+          retention-days: 7
