@@ -413,7 +413,10 @@ impl Default for Graphics {
             lod_distance: 0,
             far_detail: FarDetail::Full,
             cave_culling: true,
-            entity_culling: false,
+            // The culler is conservative (vanilla packs only, a bounded
+            // budget, and it only ever skips mesh submission), while a
+            // phone's GPU is the scarce resource: Android defaults it on.
+            entity_culling: cfg!(target_os = "android"),
             chunk_updates: 0,
             upload_budget_kib: 0,
             sky: true,
