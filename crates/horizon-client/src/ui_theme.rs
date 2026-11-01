@@ -331,6 +331,13 @@ impl Cache {
 /// One frame of design-system drawing, in dp: the
 /// launcher's logical pixels, scaled so the screen reads like the launcher's
 /// 1040x700 window at any size.
+/// `c` (in the HUD's packed encoding) shifted by `d` on every colour
+/// channel; negative darkens. The alpha byte is kept.
+fn shade(c: u32, d: i32) -> u32 {
+    let chan = |shift: u32| ((c >> shift & 0xff) as i32 + d).clamp(0, 255) as u32;
+    c & 0xff00_0000 | chan(16) << 16 | chan(8) << 8 | chan(0)
+}
+
 pub struct Ui<'a> {
     pub atlas: &'a HudAtlas,
     pub batch: &'a mut HudBatch,
@@ -525,25 +532,29 @@ impl<'a> Ui<'a> {
             self.rounded(x, y + h - lp, w, lp, 0.0, lip);
         }
     }
-    /// The launcher backdrop: the page colour with a faint checkerboard of
-    /// the darker side tone over it, so large screens do not read as one
-    /// flat void. Cells are big (46 dp) and the contrast is deliberately
-    /// low; content draws over it unchanged.
+    /// The launcher backdrop: the stone texture the desktop Blocks pages
+    /// sit on — tiles in close shades of the page colour
+    /// (`horizon_theme::TILE_SHADES` lightness points, scaled to RGB
+    /// deltas), each tile's shade picked by a fixed hash of its position
+    /// so the pattern never moves between frames. Content draws over it
+    /// unchanged.
     pub fn backdrop(&mut self) {
         self.rounded(0.0, 0.0, self.w, self.h, 0.0, color::block::PAGE);
-        let cell = 46.0;
-        let cols = (self.w / cell).ceil() as i32;
-        let rows = (self.h / cell).ceil() as i32;
+        let cell = 26.0;
+        let cols = (self.w / cell).ceil() as u32;
+        let rows = (self.h / cell).ceil() as u32;
         for cy in 0..rows {
             for cx in 0..cols {
-                if (cx + cy) % 2 == 0 {
+                let hash = cx.wrapping_mul(73_856_093) ^ cy.wrapping_mul(19_349_663);
+                let points = horizon_theme::TILE_SHADES[(hash % 5) as usize] as i32;
+                if points != 0 {
                     self.rounded(
                         cx as f32 * cell,
                         cy as f32 * cell,
                         cell,
                         cell,
                         0.0,
-                        color::block::SIDE,
+                        shade(color::block::PAGE, points * 5 / 2),
                     );
                 }
             }

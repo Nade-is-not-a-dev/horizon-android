@@ -58,6 +58,84 @@ pub(super) enum Action {
     GpuProfile,
 }
 
+/// The pixel landscape from the desktop launcher's Blocks home, drawn in
+/// code the same way it is drawn there: a sunset sky in horizontal bands
+/// (the night sky's stops, in the sky's own shares), a sun cut into
+/// slices like the Horizon mark, and dark hills with square trees along
+/// the horizon. Framed with the block outline so it reads as a picture
+/// in a slot.
+fn landscape(ui: &mut Ui, x: f32, y: f32, w: f32, h: f32) {
+    const SKY: [u32; 6] = [0x07061a, 0x140f38, 0x2a1656, 0x5b2a78, 0xb0477d, 0xf08a5d];
+    const SHARES: [f32; 6] = [0.20, 0.18, 0.17, 0.15, 0.15, 0.15];
+    let mut band_y = y;
+    for (i, stop) in SKY.iter().enumerate() {
+        let band_h = if i + 1 == SKY.len() {
+            y + h - band_y
+        } else {
+            h * SHARES[i]
+        };
+        ui.rounded(x, band_y, w, band_h, 0.0, color::hex(*stop, 255));
+        band_y += band_h;
+    }
+    const STARS: [(f32, f32); 12] = [
+        (0.05, 0.12),
+        (0.13, 0.30),
+        (0.22, 0.08),
+        (0.31, 0.22),
+        (0.40, 0.36),
+        (0.48, 0.10),
+        (0.57, 0.28),
+        (0.64, 0.14),
+        (0.70, 0.40),
+        (0.78, 0.30),
+        (0.86, 0.10),
+        (0.93, 0.22),
+    ];
+    for (fx, fy) in STARS {
+        ui.rounded(
+            x + fx * w,
+            y + fy * h,
+            3.0,
+            3.0,
+            0.0,
+            color::hex(0xcfc9ea, 255),
+        );
+    }
+    // The sun, cut in slices like the mark: narrow at the top, widest
+    // where it meets the horizon.
+    let sun_x = x + w * 0.72;
+    let sun_base = y + h - 12.0;
+    let slices = [(46.0, 9.0), (76.0, 9.0), (102.0, 11.0)];
+    let tones = [0xffc46b, 0xf7a355, 0xf08a5d];
+    let mut sun_y = sun_base - 35.0;
+    for (i, (sw, sh)) in slices.iter().enumerate() {
+        ui.rounded(
+            sun_x - sw / 2.0,
+            sun_y,
+            *sw,
+            *sh,
+            0.0,
+            color::hex(tones[i], 255),
+        );
+        sun_y += sh + 3.0;
+    }
+    let hill = color::hex(0x0d0a1a, 255);
+    ui.rounded(x, y + h - 34.0, w * 0.36, 34.0, 0.0, hill);
+    ui.rounded(x, y + h - 48.0, w * 0.20, 48.0, 0.0, hill);
+    ui.rounded(x + w * 0.60, y + h - 28.0, w * 0.40, 28.0, 0.0, hill);
+    ui.rounded(x + w * 0.78, y + h - 42.0, w * 0.22, 42.0, 0.0, hill);
+    ui.rounded(x, y + h - 12.0, w, 12.0, 0.0, color::hex(0x080614, 255));
+    // Square trees standing on the hills.
+    let tree = |ui: &mut Ui, tx: f32, base: f32, s: f32| {
+        ui.rounded(tx - 3.0 * s, base - 34.0 * s, 6.0 * s, 34.0 * s, 0.0, hill);
+        ui.rounded(tx - 15.0 * s, base - 62.0 * s, 30.0 * s, 28.0 * s, 0.0, hill);
+        ui.rounded(tx - 9.0 * s, base - 74.0 * s, 18.0 * s, 12.0 * s, 0.0, hill);
+    };
+    tree(ui, x + w * 0.10, y + h - 46.0, 1.0);
+    tree(ui, x + w * 0.86, y + h - 40.0, 0.7);
+    ui.border(x, y, w, h, 0.0, color::block::OUTLINE);
+}
+
 pub(super) fn button(
     ui: &mut Ui,
     targets: &mut Vec<([f32; 4], Action)>,
@@ -284,7 +362,7 @@ impl Launcher {
             button(
                 &mut ui,
                 &mut self.targets,
-                [x, 92.0, tab_width - 4.0, 52.0],
+                [x, 92.0, tab_width - 8.0, 52.0],
                 if w < 700.0 {
                     match page {
                         Page::Installed => "Files",
@@ -446,6 +524,14 @@ impl Launcher {
                         line,
                     );
                 }
+                // The desktop Blocks home opens on a pixel landscape
+                // banner; the same picture fills the space over the main
+                // action when the screen is tall enough to hold it.
+                let band_y = top + 242.0;
+                let band_h = (h - 136.0 - band_y).min(148.0);
+                if band_h >= 84.0 {
+                    landscape(&mut ui, 32.0, band_y, w - 64.0, band_h);
+                }
             }
             if installing {
                 ui.text(
@@ -490,7 +576,7 @@ impl Launcher {
             button(
                 &mut ui,
                 &mut self.targets,
-                [32.0, 192.0, w - 256.0, 54.0],
+                [32.0, 206.0, w - 256.0, 54.0],
                 &format!(
                     "{}{}",
                     if page == Page::Mods {
@@ -506,7 +592,7 @@ impl Launcher {
             button(
                 &mut ui,
                 &mut self.targets,
-                [w - 206.0, 192.0, 174.0, 54.0],
+                [w - 206.0, 206.0, 174.0, 54.0],
                 if page == Page::Mods && self.catalog.query.trim().starts_with("https://") {
                     "Import .hmod"
                 } else {
@@ -519,7 +605,7 @@ impl Launcher {
                 use crate::shader_catalog::Origin;
                 let width = ((w - 185.0) / 2.0).clamp(76.0, 150.0);
                 for (i, origin) in [Origin::Horizon, Origin::Modrinth].into_iter().enumerate() {
-                    let rect = [w - 32.0 - (2 - i) as f32 * width, 152.0, width - 5.0, 44.0];
+                    let rect = [w - 32.0 - (2 - i) as f32 * width, 154.0, width - 8.0, 40.0];
                     button(
                         &mut ui,
                         &mut self.targets,
@@ -560,7 +646,7 @@ impl Launcher {
                 _ => "Verified downloads / enable in Installed",
             };
             let hint = ui.fit_text(Face::Regular, 14.0, hint, w - 64.0);
-            ui.text(Face::Regular, 14.0, 32.0, 288.0, color::MUTED, &hint);
+            ui.text(Face::Regular, 14.0, 32.0, 330.0, color::MUTED, &hint);
             let kind = match page {
                 Page::Mods => horizon_client::content_files::Kind::Mods,
                 Page::Shaders => horizon_client::content_files::Kind::Shaders,
@@ -570,7 +656,7 @@ impl Launcher {
             button(
                 &mut ui,
                 &mut self.targets,
-                [32.0, 240.0, file_button_width, 48.0],
+                [32.0, 272.0, file_button_width, 48.0],
                 "Open folder",
                 Action::OpenFolder(kind),
                 false,
@@ -578,12 +664,12 @@ impl Launcher {
             button(
                 &mut ui,
                 &mut self.targets,
-                [w - 32.0 - file_button_width, 240.0, file_button_width, 48.0],
+                [w - 32.0 - file_button_width, 272.0, file_button_width, 48.0],
                 "Import file",
                 Action::Import(kind),
                 false,
             );
-            let top = 314.0;
+            let top = 356.0;
             let bottom = h - 112.0;
             self.catalog.scroll = self.catalog.scroll.clamp(
                 0.0,
