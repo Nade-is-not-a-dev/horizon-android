@@ -65,3 +65,51 @@ jobs:
           rustup target add "${{ matrix.target }}"
       - name: Check Android Rust code without building an APK
         run: python3 tools/android_build.py --abi "${{ matrix.abi }}" --check --public --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME_17_X64"
+  notify:
+    needs: [source, native]
+    if: always() && needs.source.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SOURCE_RESULT: ${{ needs.source.result }}
+      NATIVE_RESULT: ${{ needs.native.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Send the result summary to Telegram
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets are not set; skipping the notification."
+            exit 0
+          fi
+          head_sha="${{ github.sha }}"
+          short="${head_sha:0:9}"
+          prev=$(gh api "repos/${{ github.repository }}/actions/workflows/android-source.yml/runs?per_page=10" \
+            --jq "[.workflow_runs[] | select(.status == \"completed\" and .head_sha != \"$head_sha\")][0].head_sha // empty")
+          changes=""
+          if [ -n "$prev" ]; then
+            changes=$(gh api "repos/${{ github.repository }}/compare/$prev...$head_sha" \
+              --jq '.commits[] | .commit.message | split("\n")[0]' 2>/dev/null | head -25 | sed 's/^/- /' || true)
+          fi
+          if [ -z "$changes" ]; then
+            changes=$(gh api "repos/${{ github.repository }}/commits/$head_sha" --jq '.commit.message' | head -1 | sed 's/^/- /')
+          fi
+          changes=$(printf '%s' "$changes" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+          if [ "$SOURCE_RESULT" = "success" ] && { [ "$NATIVE_RESULT" = "success" ] || [ "$NATIVE_RESULT" = "skipped" ]; }; then
+            status="✅ <b>Cek sumber berhasil</b>"
+          else
+            status="❌ <b>Cek sumber gagal</b> (source: $SOURCE_RESULT, native: $NATIVE_RESULT)"
+          fi
+          text=$(printf '%s\nBranch: <code>%s</code>\nCommit: <code>%s</code>\n\n<b>Perubahan:</b>\n%s' \
+            "$status" "${{ github.ref_name }}" "$short" "$changes")
+          jq -n --arg chat "$TELEGRAM_CHAT_ID" --arg text "$text" --arg url "$RUN_URL" \
+            '{chat_id: $chat, text: $text, parse_mode: "HTML",
+              reply_markup: {inline_keyboard: [[{text: "📋 Lihat hasil cek", url: $url}]]}}' \
+            | curl -sS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+                -H 'Content-Type: application/json' -d @- > /dev/null
+          echo "Summary sent."
