@@ -71,6 +71,8 @@ pub mod color {
         use horizon_theme::BLOCKS_DARK as B;
         /// The page behind everything.
         pub const PAGE: u32 = hex(B.page, 255);
+        /// The darker side tone: the backdrop's alternate checker cell.
+        pub const SIDE: u32 = hex(B.side, 255);
         /// Panels: rows, cards, dialogs.
         pub const PANEL: u32 = hex(B.panel, 255);
         /// A selected or hovered panel or row.
@@ -512,6 +514,30 @@ impl<'a> Ui<'a> {
         let lp = 4.0f32.min(h * 0.34);
         if lp >= 1.0 {
             self.rounded(x, y + h - lp, w, lp, 0.0, lip);
+        }
+    }
+    /// The launcher backdrop: the page colour with a faint checkerboard of
+    /// the darker side tone over it, so large screens do not read as one
+    /// flat void. Cells are big (46 dp) and the contrast is deliberately
+    /// low; content draws over it unchanged.
+    pub fn backdrop(&mut self) {
+        self.rounded(0.0, 0.0, self.w, self.h, 0.0, color::block::PAGE);
+        let cell = 46.0;
+        let cols = (self.w / cell).ceil() as i32;
+        let rows = (self.h / cell).ceil() as i32;
+        for cy in 0..rows {
+            for cx in 0..cols {
+                if (cx + cy) % 2 == 0 {
+                    self.rounded(
+                        cx as f32 * cell,
+                        cy as f32 * cell,
+                        cell,
+                        cell,
+                        0.0,
+                        color::block::SIDE,
+                    );
+                }
+            }
         }
     }
     /// A sunk block well (fields, tracks, switch boxes): an outlined dark
