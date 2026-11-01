@@ -135,6 +135,9 @@ pub fn mth_clamp(value: f32, min: f32, max: f32) -> f32 {
 pub struct LookOptions {
     pub sensitivity: f64,
     pub smooth_camera: bool,
+    /// Spread each frame's turn over the following frames (Android mouse
+    /// look): the total turn is preserved, the steps are smaller.
+    pub smooth_turn: bool,
     /// First-person camera and the player is scoping (spyglass).
     pub scoping: bool,
     pub invert_x: bool,
@@ -151,6 +154,8 @@ pub struct MouseLook {
     smooth_turn_y: SmoothDouble,
     accumulated_dx: f64,
     accumulated_dy: f64,
+    carry_x: f64,
+    carry_y: f64,
     pub scroll: ScrollWheelHandler,
     last_handle_movement_time: f64,
 }
@@ -165,6 +170,8 @@ impl Default for MouseLook {
             smooth_turn_y: SmoothDouble::default(),
             accumulated_dx: 0.0,
             accumulated_dy: 0.0,
+            carry_x: 0.0,
+            carry_y: 0.0,
             scroll: ScrollWheelHandler::default(),
             // Double.MIN_VALUE
             last_handle_movement_time: 4.9e-324,
@@ -176,6 +183,8 @@ impl MouseLook {
     /// `setIgnoreFirstMove`.
     pub fn set_ignore_first_move(&mut self) {
         self.ignore_first_move = true;
+        self.carry_x = 0.0;
+        self.carry_y = 0.0;
     }
 
     /// `onMove`: relative motion counts while the pointer is grabbed, absolute
@@ -235,12 +244,18 @@ impl MouseLook {
         let turn = (window_active && grabbed_with_player).then(|| self.turn_player(mousea, look));
         self.accumulated_dx = 0.0;
         self.accumulated_dy = 0.0;
+        if turn.is_none() {
+            self.carry_x = 0.0;
+            self.carry_y = 0.0;
+        }
         turn
     }
 
     fn turn_player(&mut self, mousea: f64, look: LookOptions) -> (f64, f64) {
         let (sensitivity_mod, sens) = sensitivity_scales(look.sensitivity);
         let (xo, yo) = if look.smooth_camera {
+            self.carry_x = 0.0;
+            self.carry_y = 0.0;
             (
                 self.smooth_turn_x
                     .get_new_delta_value(self.accumulated_dx * sens, mousea * sens),
@@ -250,10 +265,29 @@ impl MouseLook {
         } else if look.scoping {
             self.smooth_turn_x.reset();
             self.smooth_turn_y.reset();
+            self.carry_x = 0.0;
+            self.carry_y = 0.0;
             (
                 self.accumulated_dx * sensitivity_mod,
                 self.accumulated_dy * sensitivity_mod,
             )
+        } else if look.smooth_turn {
+            self.smooth_turn_x.reset();
+            self.smooth_turn_y.reset();
+            // Phone frame rates deliver mouse motion in uneven batches:
+            // applying a whole batch in one frame turns the camera in
+            // visible steps. Feed the batch into a reservoir and drain a
+            // time-based share of it each frame instead: the total turn
+            // is unchanged, it just lands over the following frames (a
+            // ~30 ms tail), which reads as smooth motion.
+            self.carry_x += self.accumulated_dx * sens;
+            self.carry_y += self.accumulated_dy * sens;
+            let share = 1.0 - (-mousea.max(0.0) / 0.030).exp();
+            let xo = self.carry_x * share;
+            let yo = self.carry_y * share;
+            self.carry_x -= xo;
+            self.carry_y -= yo;
+            (xo, yo)
         } else {
             self.smooth_turn_x.reset();
             self.smooth_turn_y.reset();
@@ -371,6 +405,7 @@ mod tests {
     const PLAIN: LookOptions = LookOptions {
         sensitivity: 0.5,
         smooth_camera: false,
+        smooth_turn: false,
         scoping: false,
         invert_x: false,
         invert_y: false,
@@ -418,6 +453,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn smooth_turn_spreads_the_same_total_over_frames() {
+        let o = LookOptions {
+            smooth_turn: true,
+            ..PLAIN
+        };
+        let mut look = MouseLook::default();
+        let mut rot = rotation();
+        // Prime the frame clock, then one batch at 30 fps spacing: the
+        // first frame turns only part of the way...
+        frame(&mut look, &mut rot, 0.0, (0.0, 0.0), o);
+        frame(&mut look, &mut rot, 1.0 / 30.0, (100.0, 0.0), o);
+        let first = rot.y_rot;
+        let mut plain = MouseLook::default();
+        let mut plain_rot = rotation();
+        frame(&mut plain, &mut plain_rot, 0.0, (100.0, 0.0), PLAIN);
+        assert!(first > 0.0 && first < plain_rot.y_rot, "{first}");
+        // ...and still frames drain the reservoir to the same total.
+        for i in 2..60 {
+            frame(&mut look, &mut rot, f64::from(i) / 30.0, (0.0, 0.0), o);
+        }
+        assert!(
+            (rot.y_rot - plain_rot.y_rot).abs() < 0.01,
+            "{} vs {}",
+            rot.y_rot,
+            plain_rot.y_rot
+        );
     }
 
     #[test]
@@ -504,6 +568,7 @@ mod tests {
                 LookOptions {
                     sensitivity: 0.5,
                     smooth_camera: false,
+                    smooth_turn: false,
                     scoping: false,
                     invert_x: false,
                     invert_y: false,

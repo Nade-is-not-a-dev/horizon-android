@@ -6984,6 +6984,7 @@ impl Game<'_> {
         LookOptions {
             sensitivity: f64::from(self.settings.sensitivity),
             smooth_camera: self.smooth_camera,
+            smooth_turn: cfg!(target_os = "android"),
             scoping: self.scoping(),
             invert_x: self.settings.invert_x,
             invert_y: self.settings.invert_y,
