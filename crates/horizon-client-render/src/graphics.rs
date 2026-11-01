@@ -424,7 +424,15 @@ impl Default for Graphics {
             weather: true,
             animated_textures: true,
             present_mode: PresentMode::Auto,
-            pacing: Pacing::Efficient,
+            // Efficient pacing sleeps the whole wait, which lands frames
+            // unevenly under Android's sleep granularity: menus judder and
+            // accumulated mouse motion arrives in uneven batches. Android
+            // defaults to vanilla's sleep-then-spin limiter instead.
+            pacing: if cfg!(target_os = "android") {
+                Pacing::Precise
+            } else {
+                Pacing::Efficient
+            },
             workers: 0,
             overlay: Overlay::Off,
             resolution_scale: 100,
