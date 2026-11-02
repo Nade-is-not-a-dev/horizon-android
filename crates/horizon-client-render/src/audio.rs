@@ -147,6 +147,7 @@ struct SoundCache {
     bytes: usize,
     clock: u64,
 }
+#[cfg(any(test, not(target_os = "android")))]
 const CACHE_BYTES: usize = 64 << 20;
 impl SoundCache {
     fn get(&mut self, key: &str) -> Option<Samples> {
@@ -161,7 +162,16 @@ impl SoundCache {
         if let Some((old, _)) = self.entries.insert(key, (samples, self.clock)) {
             self.bytes -= Self::size(&old);
         }
-        while self.bytes > CACHE_BYTES && self.entries.len() > 1 {
+        #[cfg(target_os = "android")]
+        let budget = crate::android_runtime::sound_cache_budget();
+        #[cfg(not(target_os = "android"))]
+        let budget = CACHE_BYTES;
+        // Playing channels own their Arc; eviction never interrupts a sound.
+        let strict =
+            cfg!(target_os = "android") && crate::android_runtime::cache_budget_overridden();
+        while self.bytes > budget
+            && (self.entries.len() > 1 || (strict && !self.entries.is_empty()))
+        {
             let Some(oldest) = self
                 .entries
                 .iter()
@@ -1258,6 +1268,17 @@ impl Audio {
             self.play(event, Some(at), volume, pitch);
             return;
         }
+        self.play_after(
+            event,
+            at,
+            volume,
+            pitch,
+            (distance_sqr.sqrt() / 40.0 * 20.0) as i32,
+        );
+    }
+    /// `play` at a world position, starting `ticks` sound-engine ticks (20 a
+    /// second) from now: `SoundEngine.playDelayed`.
+    pub fn play_after(&mut self, event: &str, at: [f64; 3], volume: f32, pitch: f32, ticks: i32) {
         let seed = self.random.next_long();
         if let Some(capture) = self.capture.as_mut() {
             capture.push((event.to_owned(), at, volume, pitch));
@@ -1271,8 +1292,7 @@ impl Audio {
         let instance =
             SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
         let id = self.engine.add(instance, false);
-        self.engine
-            .play_delayed(id, (distance_sqr.sqrt() / 40.0 * 20.0) as i32);
+        self.engine.play_delayed(id, ticks);
     }
     /// `play` for this client only: a sound a packet's handler plays
     /// (`playLocalSound`), which the guests play from that packet themselves.
@@ -1367,6 +1387,13 @@ impl Audio {
     pub fn stop_and_release(&mut self, id: InstanceId) {
         self.stop_instance(id);
         self.release(id);
+    }
+    /// `SoundBufferLibrary.enumerate`: the decoded buffers kept and their bytes.
+    pub fn cache_stats(&self) -> (usize, usize) {
+        self.backend
+            .cache
+            .lock()
+            .map_or((0, 0), |c| (c.entries.len(), c.bytes))
     }
     /// Every sound event id (for command completion).
     /// The engine's table sizes and the mixer's channels (`status`).

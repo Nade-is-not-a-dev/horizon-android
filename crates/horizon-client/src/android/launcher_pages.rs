@@ -21,6 +21,7 @@ pub(super) enum Action {
     ToggleLocal(usize),
     DeleteLocal(usize),
     ConfirmDeleteLocal,
+    ConfirmExit,
     Next,
     Previous,
     Profile,
@@ -54,6 +55,13 @@ pub(super) enum Action {
     ChooseAspect(crate::display::Aspect),
     DisplayHz,
     ChooseDisplayHz(u16),
+    CacheBudget,
+    ChooseCacheBudget(u32),
+    ToggleBundled(&'static str),
+    WorldFiles,
+    GameFiles,
+    WorkerLimit,
+    ChooseWorkerLimit(u32),
     PerformanceHints,
     GpuProfile,
 }
@@ -543,19 +551,68 @@ impl Launcher {
                 Action::Import(kind),
                 false,
             );
+            let bundled: Vec<_> = if page == Page::Mods
+                && self.catalog.config.mod_source == crate::shader_catalog::Origin::Horizon
+            {
+                let query = self.catalog.query.to_lowercase();
+                horizon_client::mod_list::ANDROID_BUNDLED
+                    .into_iter()
+                    .filter(|(id, title, _)| {
+                        id.contains(&query) || title.to_lowercase().contains(&query)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let catalog_rows: Vec<_> = self
+                .catalog
+                .results
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    !(page == Page::Mods
+                        && p.source == crate::browser::SourceId::Horizon
+                        && horizon_client::mod_list::ANDROID_BUNDLED
+                            .iter()
+                            .any(|(id, _, _)| *id == p.id))
+                })
+                .collect();
+            let row_count = bundled.len() + catalog_rows.len();
             let top = 296.0;
             let bottom = h - 112.0;
-            self.catalog.scroll = self.catalog.scroll.clamp(
-                0.0,
-                (self.catalog.results.len() as f32 * 78.0 - (bottom - top)).max(0.0),
-            );
+            self.catalog.scroll = self
+                .catalog
+                .scroll
+                .clamp(0.0, (row_count as f32 * 78.0 - (bottom - top)).max(0.0));
             self.list_view = Some([
                 top,
                 bottom,
-                (self.catalog.results.len() as f32 * 78.0 - (bottom - top)).max(0.0),
+                (row_count as f32 * 78.0 - (bottom - top)).max(0.0),
             ]);
-            for (i, p) in self.catalog.results.iter().enumerate() {
-                let y = top + i as f32 * 78.0 - self.catalog.scroll;
+            for (row, (id, title, description)) in bundled.iter().enumerate() {
+                let y = top + row as f32 * 78.0 - self.catalog.scroll;
+                if y < top - 1.0 || y + 68.0 > bottom {
+                    continue;
+                }
+                let title = ui.fit_text(Face::Medium, 19.0, title, w - 214.0);
+                let summary = ui.fit_text(Face::Regular, 14.0, description, w - 214.0);
+                ui.text(Face::Medium, 19.0, 32.0, y, color::TEXT, &title);
+                ui.text(Face::Regular, 14.0, 32.0, y + 29.0, color::MUTED, &summary);
+                button(
+                    &mut ui,
+                    &mut self.targets,
+                    [w - 150.0, y, 118.0, 42.0],
+                    if self.catalog.bundled_enabled.contains(*id) {
+                        "Disable"
+                    } else {
+                        "Enable"
+                    },
+                    Action::ToggleBundled(id),
+                    false,
+                );
+            }
+            for (row, (i, p)) in catalog_rows.into_iter().enumerate() {
+                let y = top + (row + bundled.len()) as f32 * 78.0 - self.catalog.scroll;
                 let download = self.catalog.download_label(p);
                 if download.is_none()
                     && !crate::catalog::source_only_mod(p)
@@ -777,11 +834,11 @@ impl Launcher {
             self.catalog.scroll = self
                 .catalog
                 .scroll
-                .clamp(0.0, (15.0 * row_height - (h - 130.0 - 195.0)).max(0.0));
+                .clamp(0.0, (18.0 * row_height - (h - 130.0 - 195.0)).max(0.0));
             self.list_view = Some([
                 195.0,
                 h - 130.0,
-                (15.0 * row_height - (h - 130.0 - 195.0)).max(0.0),
+                (18.0 * row_height - (h - 130.0 - 195.0)).max(0.0),
             ]);
             for (i, (title, value, action)) in [
                 ("Rendering", c.renderer.label().to_owned(), Action::Renderer),
@@ -793,6 +850,34 @@ impl Launcher {
                         format!("{}%", c.render_scale.percent())
                     },
                     Action::RenderScale,
+                ),
+                (
+                    "Chunk worker limit",
+                    if c.worker_limit == 0 {
+                        "No additional limit".into()
+                    } else {
+                        c.worker_limit.to_string()
+                    },
+                    Action::WorkerLimit,
+                ),
+                (
+                    "Reusable RAM cache",
+                    if c.cache_budget_mib == 0 {
+                        "Engine default (80 MiB)".into()
+                    } else {
+                        format!("{} MiB", c.cache_budget_mib)
+                    },
+                    Action::CacheBudget,
+                ),
+                (
+                    "Game files",
+                    "Open in system Files".into(),
+                    Action::GameFiles,
+                ),
+                (
+                    "World files",
+                    "Import / copy / back up in Files".into(),
+                    Action::WorldFiles,
                 ),
                 ("Profile", format!("Profile {}", c.profile), Action::Profile),
                 (
@@ -1060,6 +1145,41 @@ impl Launcher {
                 }
             }
         }
+        if self.exit_confirmation {
+            self.targets.clear();
+            self.list_targets.clear();
+            self.list_view = None;
+            ui.rounded(0.0, 0.0, w, h, 0.0, horizon_client::hud::rgba(0, 0, 0, 160));
+            let width = (w - 32.0).min(360.0);
+            let x = (w - width) * 0.5;
+            let y = (h - 160.0) * 0.5;
+            ui.rounded(x, y, width, 160.0, 8.0, color::RAISED);
+            ui.text(
+                Face::Medium,
+                22.0,
+                x + 20.0,
+                y + 24.0,
+                color::TEXT,
+                "Exit application?",
+            );
+            let bw = (width - 52.0) * 0.5;
+            button(
+                &mut ui,
+                &mut self.targets,
+                [x + 20.0, y + 92.0, bw, 44.0],
+                "Cancel",
+                Action::Dismiss,
+                false,
+            );
+            button(
+                &mut ui,
+                &mut self.targets,
+                [x + 32.0 + bw, y + 92.0, bw, 44.0],
+                "Exit",
+                Action::ConfirmExit,
+                false,
+            );
+        }
         if let Some(action) = self.pending_focus.take() {
             self.focus = self.targets.iter().position(|(_, a)| *a == action);
         }
@@ -1119,7 +1239,7 @@ impl Launcher {
         Ok(())
     }
     pub(super) fn activate(&mut self, events: &ActiveEventLoop) -> Result<()> {
-        if self.session_worker.is_some() {
+        if self.session_worker.is_some() && self.chooser.is_none() && !self.exit_confirmation {
             return Ok(());
         }
         let Some(r) = &self.renderer else {
@@ -1167,6 +1287,9 @@ impl Launcher {
             audio.play_button_click();
         }
         match action {
+            Some(Action::ConfirmExit) => {
+                events.exit();
+            }
             Some(Action::Immersive) => {
                 self.catalog.config.screen.immersive ^= true;
                 self.catalog.config.save(&self.home)?;
@@ -1183,6 +1306,50 @@ impl Launcher {
                 self.catalog.config.save(&self.home)?;
                 self.configure_screen();
                 self.chooser = None;
+            }
+            Some(Action::CacheBudget) => self.open_chooser(chooser::Kind::CacheBudget),
+            Some(Action::ChooseCacheBudget(mib)) => {
+                self.catalog.config.cache_budget_mib = mib.min(1024);
+                self.catalog.config.save(&self.home)?;
+                self.chooser = None;
+                self.catalog.status = "Disposable cache budget saved. Applies on next Play; not a total RAM or VRAM limit.".into();
+            }
+            Some(Action::ToggleBundled(id)) => {
+                let game = self.catalog.config.game_home(&self.home);
+                let mut list = horizon_client::mod_list::ModList::load(&game);
+                let enabled = list.enabled.contains(id) && !list.disabled.contains(id);
+                if enabled {
+                    list.enabled.remove(id);
+                    list.disabled.insert(id.into());
+                } else {
+                    list.disabled.remove(id);
+                    list.enabled.insert(id.into());
+                }
+                std::fs::create_dir_all(&game)?;
+                std::fs::write(game.join(horizon_client::mod_list::FILE), list.serialize())?;
+                self.catalog.refresh(&self.home);
+                self.catalog.status = format!(
+                    "Bundled {id} {}. Applies on Play; settings are in Options > Mods.",
+                    if enabled { "disabled" } else { "enabled" }
+                );
+            }
+            Some(Action::GameFiles) => {
+                self.catalog.status = if crate::platform::open_documents(crate::document_store::ROOT) {
+                    "Game files opened. Worlds, mods, packs, shaders and reports are available here."
+                } else { "Open system Files > Horizon Android." }.into();
+            }
+            Some(Action::WorldFiles) => {
+                let id = crate::document_store::folder_id(self.catalog.config.profile, "worlds");
+                self.catalog.status = if crate::platform::open_documents(&id) {
+                    "Copy a complete world folder to back up or import. Finish copying before Play; never replace an existing world silently."
+                } else { "Open system Files > Horizon Android > Worlds. Copy complete world folders while the game is closed." }.into();
+            }
+            Some(Action::WorkerLimit) => self.open_chooser(chooser::Kind::WorkerLimit),
+            Some(Action::ChooseWorkerLimit(limit)) => {
+                self.catalog.config.worker_limit = limit.min(64);
+                self.catalog.config.save(&self.home)?;
+                self.chooser = None;
+                self.catalog.status = "Chunk worker ceiling saved. Applies on the next Play; other engine threads are unchanged.".into();
             }
             Some(Action::DisplayHz) => self.open_chooser(chooser::Kind::DisplayHz),
             Some(Action::ChooseDisplayHz(hz)) => {
@@ -1269,17 +1436,28 @@ impl Launcher {
                 crate::platform::hide();
                 self.catalog.editing = None;
             }
-            Some(Action::DeviceSignIn) => self
-                .login
-                .start_device(&self.catalog.config.microsoft_client_id),
+            Some(Action::DeviceSignIn) => {
+                self.session_ready = false;
+                self.prepared_session = None;
+                self.login
+                    .start_device(&self.catalog.config.microsoft_client_id);
+            }
             Some(Action::CopyLoginCode) => self.login.copy_code(),
             Some(Action::CancelLogin) => {
                 self.login.close();
                 self.login.visible = true;
             }
             Some(Action::ReviewApp) => self.login.review_app(),
-            Some(Action::SignIn) => self.login.start(&self.catalog.config.microsoft_client_id),
-            Some(Action::SignOut) => self.login.sign_out(),
+            Some(Action::SignIn) => {
+                self.session_ready = false;
+                self.prepared_session = None;
+                self.login.start(&self.catalog.config.microsoft_client_id);
+            }
+            Some(Action::SignOut) => {
+                self.session_ready = false;
+                self.prepared_session = None;
+                self.login.sign_out();
+            }
             Some(Action::LoginLink) => self.login.open_link(),
             Some(Action::Page(page)) => {
                 self.catalog.editing = None;
@@ -1369,7 +1547,14 @@ impl Launcher {
                 self.catalog.refresh(&self.home);
                 self.chooser = None;
             }
-            Some(Action::Dismiss) => self.chooser = None,
+            Some(Action::Dismiss) => {
+                self.exit_confirmation = false;
+                self.chooser = None;
+                if self.session_worker.is_none() {
+                    self.session_ready = false;
+                    self.prepared_session = None;
+                }
+            }
             Some(Action::Logs) => {
                 self.catalog.status = crate::diagnostics::summary(&self.home);
                 if let Ok(error) = std::fs::read_to_string(self.home.join("android-error.txt")) {
@@ -1468,18 +1653,9 @@ impl Launcher {
             || key.logical_key
                 == winit::keyboard::Key::Named(winit::keyboard::NamedKey::BrowserBack)
         {
-            if self.login.visible {
-                self.login.hide();
-                crate::platform::hide();
-                self.catalog.editing = None;
-                return;
+            if !key.repeat {
+                self.request_back();
             }
-            if self.chooser.take().is_some() {
-                return;
-            }
-            crate::platform::hide();
-            self.catalog.editing = None;
-            let _ = self.catalog.config.save(&self.home);
             return;
         }
         if self.catalog.editing.is_none() {
