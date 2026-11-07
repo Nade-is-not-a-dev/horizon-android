@@ -354,6 +354,7 @@ pub enum SettingsCategory {
     Experimental,
     Diagnostics,
     Account,
+    AiAgent,
 }
 impl SettingsCategory {
     pub fn title(self) -> &'static str {
@@ -366,6 +367,7 @@ impl SettingsCategory {
             Self::Experimental => "Experimental Stuff",
             Self::Diagnostics => "Diagnostics & Logs",
             Self::Account => "Account",
+            Self::AiAgent => "AI Agent Settings",
         }
     }
 }
@@ -615,6 +617,13 @@ pub struct Catalog {
     pub config: Config,
     pub editing: Option<&'static str>,
     pub render_scale_text: String,
+    /// The built-in AI agent's settings page: text buffers for
+    /// `horizon-agent.json` (see `load_agent_config`).
+    pub agent_endpoint_text: String,
+    pub agent_api_key_text: String,
+    pub agent_model_text: String,
+    pub agent_enabled: bool,
+    pub agent_loaded: bool,
     worker: Option<mpsc::Receiver<Result<Reply, String>>>,
     search_worker: Option<mpsc::Receiver<Result<Vec<Project>, String>>>,
     icon_worker: Option<mpsc::Receiver<IconData>>,
@@ -674,6 +683,11 @@ impl Catalog {
             config,
             editing: None,
             render_scale_text: String::new(),
+            agent_endpoint_text: String::new(),
+            agent_api_key_text: String::new(),
+            agent_model_text: String::new(),
+            agent_enabled: true,
+            agent_loaded: false,
             worker: None,
             search_worker: None,
             icon_worker: None,
@@ -1944,6 +1958,9 @@ impl Catalog {
             Some("profile_desc") => &mut self.config.custom_profile_desc,
             Some("server") => &mut self.config.server,
             Some("render_scale") => &mut self.render_scale_text,
+            Some("agent_endpoint") => &mut self.agent_endpoint_text,
+            Some("agent_api_key") => &mut self.agent_api_key_text,
+            Some("agent_model") => &mut self.agent_model_text,
             Some("client_id") => &mut self.config.microsoft_client_id,
             Some("theme_bg") => &mut self.config.theme.custom_bg_hex,
             Some("theme_surface") => &mut self.config.theme.custom_surface_hex,
@@ -2002,6 +2019,12 @@ impl Catalog {
                             return;
                         }
                     }
+                } else if matches!(
+                    self.editing,
+                    Some("agent_endpoint" | "agent_api_key" | "agent_model")
+                ) {
+                    self.save_agent_config(home);
+                    self.status = "AI agent settings saved.".into();
                 } else if is_name {
                     self.config.touch_name_changed();
                 } else if is_profile_name {
@@ -2078,6 +2101,42 @@ impl Catalog {
                 }
             }
         }
+    }
+
+    /// The built-in AI agent's settings live in `horizon-agent.json`
+    /// beside the launcher's own files; the game reads the same file.
+    pub fn load_agent_config(&mut self, home: &Path) {
+        self.agent_loaded = true;
+        let Ok(text) = std::fs::read_to_string(home.join("horizon-agent.json")) else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return;
+        };
+        let field = |name: &str| {
+            value
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
+        self.agent_endpoint_text = field("endpoint");
+        self.agent_api_key_text = field("api_key");
+        self.agent_model_text = field("model");
+        self.agent_enabled = value
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+    }
+
+    pub fn save_agent_config(&self, home: &Path) {
+        let value = serde_json::json!({
+            "endpoint": self.agent_endpoint_text.trim(),
+            "api_key": self.agent_api_key_text.trim(),
+            "model": self.agent_model_text.trim(),
+            "enabled": self.agent_enabled,
+        });
+        let _ = std::fs::write(home.join("horizon-agent.json"), value.to_string());
     }
 }
 

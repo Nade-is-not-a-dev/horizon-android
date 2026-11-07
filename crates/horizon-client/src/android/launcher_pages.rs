@@ -234,6 +234,7 @@ pub(super) enum Action {
     ShaderSource(crate::shader_catalog::Origin),
     ModSource(crate::shader_catalog::Origin),
     Field(&'static str),
+    AgentToggle,
     FinishNameEdit,
     Install(usize),
     OpenProject(usize),
@@ -481,7 +482,14 @@ fn landscape(ui: &mut Ui, x: f32, y: f32, w: f32, h: f32) {
     // Square trees standing on the hills.
     let tree = |ui: &mut Ui, tx: f32, base: f32, s: f32| {
         ui.rounded(tx - 3.0 * s, base - 34.0 * s, 6.0 * s, 34.0 * s, 0.0, hill);
-        ui.rounded(tx - 15.0 * s, base - 62.0 * s, 30.0 * s, 28.0 * s, 0.0, hill);
+        ui.rounded(
+            tx - 15.0 * s,
+            base - 62.0 * s,
+            30.0 * s,
+            28.0 * s,
+            0.0,
+            hill,
+        );
         ui.rounded(tx - 9.0 * s, base - 74.0 * s, 18.0 * s, 12.0 * s, 0.0, hill);
     };
     tree(ui, x + w * 0.10, y + h - 46.0, 1.0);
@@ -3896,7 +3904,7 @@ impl Launcher {
                 "Settings",
             );
 
-            let cards: [(Icon, &str, &str, Action); 6] = [
+            let cards: [(Icon, &str, &str, Action); 7] = [
                 (
                     Icon::Monitor,
                     "Video Settings",
@@ -3926,6 +3934,12 @@ impl Launcher {
                     "Diagnostics",
                     "Logs, device info and troubleshooting",
                     Action::SettingsCat(SettingsCategory::Diagnostics),
+                ),
+                (
+                    Icon::Terminal,
+                    "AI Agent",
+                    "In-game /agent: endpoint, API key and model",
+                    Action::SettingsCat(SettingsCategory::AiAgent),
                 ),
                 (
                     Icon::MicrosoftGrid,
@@ -5435,6 +5449,102 @@ impl Launcher {
                 }
                 ui.set_clip(None);
             }
+            SettingsCategory::AiAgent => {
+                if !self.catalog.agent_loaded {
+                    self.catalog.load_agent_config(&self.home);
+                }
+                let count = 6;
+                let extra_ime = if ime_top_dp.is_some() { 180.0 } else { 0.0 };
+                let max_scroll =
+                    (count as f32 * step_y + extra_ime - (list_bottom - list_top)).max(0.0);
+                self.catalog.scroll = self.catalog.scroll.clamp(0.0, max_scroll);
+                self.list_view = Some([list_top, list_bottom, max_scroll]);
+
+                let editing = self.catalog.editing;
+                let key_display = if editing == Some("agent_api_key")
+                    || self.catalog.agent_api_key_text.is_empty()
+                {
+                    self.catalog.agent_api_key_text.clone()
+                } else {
+                    "••••••••".to_owned()
+                };
+                let rows: [(&str, &str, SettingControl<'_>); 6] = [
+                    (
+                        "IN-GAME AI AGENT (/AGENT)",
+                        "An AI model that plays alongside you, configured here and used from the game chat",
+                        SettingControl::SectionHeader("horizon-agent.json", Icon::Terminal),
+                    ),
+                    (
+                        "Endpoint",
+                        "OpenAI-compatible base URL of your AI provider or router",
+                        SettingControl::TextField {
+                            label: "ENDPOINT",
+                            value: &self.catalog.agent_endpoint_text,
+                            hint: "http://host:port/v1",
+                            active: editing == Some("agent_endpoint"),
+                            action: Action::Field("agent_endpoint"),
+                        },
+                    ),
+                    (
+                        "API key",
+                        "Stored as plain text in the app's private data",
+                        SettingControl::TextField {
+                            label: "API KEY",
+                            value: &key_display,
+                            hint: "your API key",
+                            active: editing == Some("agent_api_key"),
+                            action: Action::Field("agent_api_key"),
+                        },
+                    ),
+                    (
+                        "Model",
+                        "The model id the agent asks for, exactly as the provider names it",
+                        SettingControl::TextField {
+                            label: "MODEL",
+                            value: &self.catalog.agent_model_text,
+                            hint: "model id",
+                            active: editing == Some("agent_model"),
+                            action: Action::Field("agent_model"),
+                        },
+                    ),
+                    (
+                        "Agent enabled",
+                        "Turns the /agent chat command on or off in game",
+                        SettingControl::Toggle(self.catalog.agent_enabled, Action::AgentToggle),
+                    ),
+                    (
+                        "USAGE",
+                        "In a world, open chat and type /agent followed by what you want it to do",
+                        SettingControl::SectionHeader("/agent", Icon::Terminal),
+                    ),
+                ];
+
+                ui.set_clip(Some([
+                    content_x - 2.0,
+                    list_top,
+                    content_w + 4.0,
+                    (list_bottom - list_top).max(1.0),
+                ]));
+                for (i, (title, sub, ctrl)) in rows.into_iter().enumerate() {
+                    let y = list_top + i as f32 * step_y - self.catalog.scroll;
+                    if y + card_h < list_top || y > list_bottom {
+                        continue;
+                    }
+                    draw_setting_card(
+                        ui,
+                        &mut self.targets,
+                        &mut self.list_targets,
+                        content_x,
+                        y,
+                        content_w,
+                        card_h,
+                        title,
+                        sub,
+                        ctrl,
+                    );
+                }
+                ui.set_clip(None);
+            }
             SettingsCategory::Diagnostics => {
                 let c = &self.catalog.config;
                 let count = 7;
@@ -6371,10 +6481,14 @@ impl Launcher {
                 self.catalog.config.touch_name_changed();
                 self.catalog.config.save(&self.home)?;
             }
+            Some(Action::AgentToggle) => {
+                self.catalog.agent_enabled = !self.catalog.agent_enabled;
+                self.catalog.save_agent_config(&self.home);
+            }
             Some(Action::Field(name)) => {
                 if let Some(value) = self.login.field(name) {
                     self.catalog.editing = Some(name);
-                    if name == "ely_password" || name == "ely_otp" {
+                    if name == "ely_password" || name == "ely_otp" || name == "agent_api_key" {
                         crate::platform::show_secret(value);
                     } else {
                         crate::platform::show(value);
@@ -6392,6 +6506,9 @@ impl Launcher {
                     "profile_name" => &self.catalog.config.custom_profile_name,
                     "profile_desc" => &self.catalog.config.custom_profile_desc,
                     "server" => &self.catalog.config.server,
+                    "agent_endpoint" => &self.catalog.agent_endpoint_text,
+                    "agent_api_key" => &self.catalog.agent_api_key_text,
+                    "agent_model" => &self.catalog.agent_model_text,
                     "render_scale" => &self.catalog.render_scale_text,
                     "client_id" => &self.catalog.config.microsoft_client_id,
                     "theme_bg" => &self.catalog.config.theme.custom_bg_hex,
