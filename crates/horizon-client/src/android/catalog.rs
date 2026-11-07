@@ -127,13 +127,9 @@ pub enum Orientation {
     Auto,
 }
 impl Orientation {
-    pub const ALL: [Self; 5] = [
-        Self::Landscape,
-        Self::Portrait,
-        Self::ReverseLandscape,
-        Self::ReversePortrait,
-        Self::Auto,
-    ];
+    /// The modes the Settings chooser offers: this launcher is
+    /// landscape-only, so portrait and free rotation are not among them.
+    pub const ALL: [Self; 2] = [Self::Landscape, Self::ReverseLandscape];
     pub fn label(self) -> &'static str {
         match self {
             Self::Landscape => "Landscape (sensor)",
@@ -141,6 +137,15 @@ impl Orientation {
             Self::ReverseLandscape => "Landscape (reversed)",
             Self::ReversePortrait => "Portrait (reversed)",
             Self::Auto => "Automatic rotation",
+        }
+    }
+    /// Fold any mode that would allow portrait back to sensor
+    /// landscape, so a saved config from before the landscape lock (or
+    /// one edited by hand) can never rotate the app upright.
+    pub fn landscape(self) -> Self {
+        match self {
+            Self::Landscape | Self::ReverseLandscape => self,
+            _ => Self::Landscape,
         }
     }
     pub fn android_value(self) -> i32 {
@@ -160,6 +165,7 @@ impl Config {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let mut config: Self = serde_json::from_value(value.clone()).unwrap_or_default();
+        config.orientation = config.orientation.landscape();
         if cfg!(target_pointer_width = "32") && value.get("renderer").is_none() {
             config.renderer = RendererMode::VulkanCompatibility;
         }

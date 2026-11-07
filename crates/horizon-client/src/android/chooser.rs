@@ -4,7 +4,7 @@ use super::{
     pages::{Action, button},
 };
 use crate::catalog::RendererMode;
-use horizon_client::ui_theme::{Face, Ui};
+use horizon_client::ui_theme::{Face, Ui, color};
 
 pub(super) enum Kind {
     Aspect,
@@ -378,21 +378,21 @@ impl Chooser {
         let theme = horizon_client::ui_theme::active_theme();
         let slide = (1.0 - modal_anim.clamp(0.0, 1.0)) * 16.0;
         targets.clear();
-        ui.draw_theme_background(0.0, 0.0, w, h, &theme);
+        ui.backdrop();
         ui.text(
-            Face::SemiBold,
-            24.0,
+            Face::Pixel,
+            28.0,
             32.0,
-            32.0 + slide,
-            theme.text_primary,
+            35.0 + slide,
+            color::TEXT,
             self.title,
         );
         ui.text(
             Face::Regular,
-            14.0,
+            15.0,
             32.0,
-            74.0 + slide,
-            theme.text_muted,
+            85.0 + slide,
+            color::MUTED,
             self.help,
         );
         if let Some(device) = &self.device {
@@ -410,63 +410,26 @@ impl Chooser {
             if y + 76.0 < top || y > bottom {
                 continue;
             }
-            ui.rounded(
+            ui.block(
                 32.0,
                 y,
                 w - 64.0,
                 74.0,
-                14.0,
                 if *selected {
-                    theme.surface_selected
+                    color::block::RAISED
                 } else {
-                    theme.surface
+                    color::block::PANEL
                 },
+                color::block::BEVEL,
+                color::block::LIP,
             );
-            ui.stroke_rounded(
-                32.0,
-                y,
-                w - 64.0,
-                74.0,
-                14.0,
-                if *selected { 1.6 } else { 1.0 },
-                if *selected {
-                    theme.accent
-                } else {
-                    theme.border
-                },
-            );
-            ui.stroke_rounded(
-                48.0,
-                y + 26.0,
-                22.0,
-                22.0,
-                11.0,
-                1.8,
-                if *selected {
-                    theme.accent
-                } else {
-                    theme.text_muted
-                },
-            );
+            ui.rounded(48.0, y + 26.0, 22.0, 22.0, 0.0, color::TEXT);
+            ui.rounded(50.0, y + 28.0, 18.0, 18.0, 0.0, color::block::PAGE);
             if *selected {
-                ui.rounded(53.0, y + 31.0, 12.0, 12.0, 6.0, theme.accent);
+                ui.rounded(54.0, y + 32.0, 10.0, 10.0, 0.0, color::TEXT);
             }
-            ui.text(
-                Face::SemiBold,
-                17.0,
-                84.0,
-                y + 11.0,
-                theme.text_primary,
-                label,
-            );
-            ui.text(
-                Face::Regular,
-                13.0,
-                84.0,
-                y + 40.0,
-                theme.text_muted,
-                detail,
-            );
+            ui.text(Face::Pixel, 19.0, 84.0, y + 11.0, color::TEXT, label);
+            ui.text(Face::Regular, 14.0, 84.0, y + 40.0, color::MUTED, detail);
             if let Some(c) = ui.clip_rect([32.0, y, w - 64.0, 74.0]) {
                 targets.push((c, *action));
             }

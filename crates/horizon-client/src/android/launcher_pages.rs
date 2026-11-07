@@ -18,10 +18,6 @@ thread_local! {
 
 /// Centralized dynamic theme accessors backed by `horizon_client::ui_theme::active_theme()`.
 #[inline]
-fn my3_bg() -> u32 {
-    horizon_client::ui_theme::active_theme().bg_solid
-}
-#[inline]
 fn my3_surface() -> u32 {
     horizon_client::ui_theme::active_theme().surface
 }
@@ -415,6 +411,84 @@ pub(super) enum Action {
     FmCloseModal,
 }
 
+/// The pixel landscape from the desktop launcher's Blocks home, drawn in
+/// code the same way it is drawn there: a sunset sky in horizontal bands
+/// (the night sky's stops, in the sky's own shares), a sun cut into
+/// slices like the Horizon mark, and dark hills with square trees along
+/// the horizon. Framed with the block outline so it reads as a picture
+/// in a slot.
+fn landscape(ui: &mut Ui, x: f32, y: f32, w: f32, h: f32) {
+    const SKY: [u32; 6] = [0x07061a, 0x140f38, 0x2a1656, 0x5b2a78, 0xb0477d, 0xf08a5d];
+    const SHARES: [f32; 6] = [0.20, 0.18, 0.17, 0.15, 0.15, 0.15];
+    let mut band_y = y;
+    for (i, stop) in SKY.iter().enumerate() {
+        let band_h = if i + 1 == SKY.len() {
+            y + h - band_y
+        } else {
+            h * SHARES[i]
+        };
+        ui.rounded(x, band_y, w, band_h, 0.0, color::hex(*stop, 255));
+        band_y += band_h;
+    }
+    const STARS: [(f32, f32); 12] = [
+        (0.05, 0.12),
+        (0.13, 0.30),
+        (0.22, 0.08),
+        (0.31, 0.22),
+        (0.40, 0.36),
+        (0.48, 0.10),
+        (0.57, 0.28),
+        (0.64, 0.14),
+        (0.70, 0.40),
+        (0.78, 0.30),
+        (0.86, 0.10),
+        (0.93, 0.22),
+    ];
+    for (fx, fy) in STARS {
+        ui.rounded(
+            x + fx * w,
+            y + fy * h,
+            3.0,
+            3.0,
+            0.0,
+            color::hex(0xcfc9ea, 255),
+        );
+    }
+    // The sun, cut in slices like the mark: narrow at the top, widest
+    // where it meets the horizon.
+    let sun_x = x + w * 0.72;
+    let sun_base = y + h - 12.0;
+    let slices = [(46.0, 9.0), (76.0, 9.0), (102.0, 11.0)];
+    let tones = [0xffc46b, 0xf7a355, 0xf08a5d];
+    let mut sun_y = sun_base - 35.0;
+    for (i, (sw, sh)) in slices.iter().enumerate() {
+        ui.rounded(
+            sun_x - sw / 2.0,
+            sun_y,
+            *sw,
+            *sh,
+            0.0,
+            color::hex(tones[i], 255),
+        );
+        sun_y += sh + 3.0;
+    }
+    let hill = color::hex(0x0d0a1a, 255);
+    ui.rounded(x, y + h - 34.0, w * 0.36, 34.0, 0.0, hill);
+    ui.rounded(x, y + h - 48.0, w * 0.20, 48.0, 0.0, hill);
+    ui.rounded(x + w * 0.60, y + h - 28.0, w * 0.40, 28.0, 0.0, hill);
+    ui.rounded(x + w * 0.78, y + h - 42.0, w * 0.22, 42.0, 0.0, hill);
+    ui.rounded(x, y + h - 12.0, w, 12.0, 0.0, color::hex(0x080614, 255));
+    // Square trees standing on the hills.
+    let tree = |ui: &mut Ui, tx: f32, base: f32, s: f32| {
+        ui.rounded(tx - 3.0 * s, base - 34.0 * s, 6.0 * s, 34.0 * s, 0.0, hill);
+        ui.rounded(tx - 15.0 * s, base - 62.0 * s, 30.0 * s, 28.0 * s, 0.0, hill);
+        ui.rounded(tx - 9.0 * s, base - 74.0 * s, 18.0 * s, 12.0 * s, 0.0, hill);
+    };
+    tree(ui, x + w * 0.10, y + h - 46.0, 1.0);
+    tree(ui, x + w * 0.86, y + h - 40.0, 0.7);
+    ui.border(x, y, w, h, 0.0, color::block::OUTLINE);
+}
+
 pub(super) fn button(
     ui: &mut Ui,
     targets: &mut Vec<([f32; 4], Action)>,
@@ -424,46 +498,47 @@ pub(super) fn button(
     accent: bool,
 ) {
     let [x, y, w, h] = rect;
-    let radius = (h * 0.42).clamp(10.0, 22.0);
-    ui.rounded(
-        x,
-        y,
-        w,
-        h,
-        radius,
-        if accent {
-            my3_accent()
-        } else {
-            my3_surface_high()
-        },
-    );
-    if !accent {
-        ui.border(x, y, w, h, radius, my3_border());
+    if accent {
+        ui.block(
+            x,
+            y,
+            w,
+            h,
+            color::block::FACE,
+            color::block::FACE_BEVEL,
+            color::block::FACE_LIP,
+        );
+    } else {
+        ui.block(
+            x,
+            y,
+            w,
+            h,
+            color::block::BUTTON,
+            color::block::BUTTON_BEVEL,
+            color::block::LIP,
+        );
     }
-    let padding = (w * 0.10).clamp(8.0, 14.0);
-    let font = if w < 90.0 {
-        13.0
-    } else if h <= 36.0 {
-        14.0
+    let padding = (w * 0.12).clamp(4.0, 12.0);
+    let base = if w < 80.0 { 15.0 } else { 18.0 };
+    let font = if matches!(action, Action::Page(_)) {
+        (base * ((w - 2.0 * padding) / ui.measure(Face::Pixel, base, label).max(1.0)).min(1.0))
+            .max(9.0)
     } else {
-        15.0
+        base
     };
-    let fitted = ui.fit_text(Face::Medium, font, label, (w - 2.0 * padding).max(16.0));
-    let text_w = ui.measure(Face::Medium, font, &fitted);
-    let left_align = matches!(action, Action::Field(_)) || label.ends_with(" v");
-    let tx = if left_align {
-        x + padding
-    } else {
-        x + ((w - text_w) * 0.5).max(padding)
-    };
-    let ty = y + ((h - font * 1.45) * 0.5).max(2.0);
+    let label = ui.fit_text(Face::Pixel, font, label, w - 2.0 * padding);
     ui.text(
-        Face::Medium,
+        Face::Pixel,
         font,
-        tx,
-        ty,
-        if accent { my3_on_accent() } else { my3_text() },
-        &fitted,
+        x + padding,
+        y + ((h - font * 1.45) / 2.0).max(2.0),
+        if accent {
+            color::block::ON_FACE
+        } else {
+            color::TEXT
+        },
+        &label,
     );
     if let Some(c) = ui.clip_rect(rect) {
         targets.push((c, action));
@@ -479,31 +554,38 @@ fn toggle(
 ) {
     let [x, y, w, h] = rect;
     ui.text(
-        Face::Medium,
-        13.5,
+        Face::Pixel,
+        16.0,
         x,
-        y + (h - 20.0) * 0.5,
-        if on { my3_accent() } else { my3_muted() },
-        if on { "Enabled" } else { "Off" },
+        y + ((h - 16.0 * 1.45) / 2.0).max(2.0),
+        color::TEXT,
+        if on { "On" } else { "Off" },
     );
     let track_x = x + w - 52.0;
     let track_y = y + (h - 26.0) * 0.5;
-    ui.rounded(
-        track_x,
-        track_y,
-        50.0,
-        26.0,
-        13.0,
-        if on { my3_accent() } else { my3_track() },
-    );
-    ui.rounded(
-        track_x + if on { 26.0 } else { 4.0 },
-        track_y + 3.0,
-        20.0,
-        20.0,
-        10.0,
-        if on { my3_on_accent() } else { my3_muted() },
-    );
+    ui.well(track_x, track_y, 52.0, 26.0);
+    let knob_x = if on { track_x + 29.0 } else { track_x + 3.0 };
+    if on {
+        ui.block(
+            knob_x,
+            track_y + 3.0,
+            20.0,
+            20.0,
+            color::block::FACE,
+            color::block::FACE_BEVEL,
+            color::block::FACE_LIP,
+        );
+    } else {
+        ui.block(
+            knob_x,
+            track_y + 3.0,
+            20.0,
+            20.0,
+            color::block::BUTTON,
+            color::block::BUTTON_BEVEL,
+            color::block::LIP,
+        );
+    }
     if let Some(c) = ui.clip_rect([x, y, w, h]) {
         targets.push((c, action));
     }
@@ -1098,8 +1180,7 @@ impl Launcher {
             None
         };
         let (w, h) = (ui.w, ui.h);
-        let active_th = horizon_client::ui_theme::active_theme();
-        ui.draw_theme_background(0.0, 0.0, w, h, &active_th);
+        ui.backdrop();
 
         // ---- Top Header Bar (brand lockup ... account pill) ----
         ui.horizon_logo(18.0, 12.0, 28.0);
@@ -1108,40 +1189,33 @@ impl Launcher {
             .profile
             .clone()
             .unwrap_or_else(|| self.catalog.config.name.clone());
-        let account_text_w = ui.measure(Face::Medium, 13.5, &account_name).min(136.0);
+        let account_text_w = ui.measure(Face::Pixel, 13.5, &account_name).min(136.0);
         let pill_w = (account_text_w + 64.0).clamp(114.0, 204.0);
         let pill_x = (w - 18.0 - pill_w).max(190.0);
         let pill_y = 11.0;
         let pill_h = 36.0;
 
         let eq_btn_rect = [pill_x - 44.0, pill_y, 36.0, pill_h];
-        ui.rounded(
+        ui.block(
             eq_btn_rect[0],
             eq_btn_rect[1],
             eq_btn_rect[2],
             eq_btn_rect[3],
-            pill_h * 0.5,
-            my3_surface(),
-        );
-        ui.border(
-            eq_btn_rect[0],
-            eq_btn_rect[1],
-            eq_btn_rect[2],
-            eq_btn_rect[3],
-            pill_h * 0.5,
-            my3_border(),
+            color::block::BUTTON,
+            color::block::BUTTON_BEVEL,
+            color::block::LIP,
         );
         ui.icon(
             Icon::MenuEquals,
             eq_btn_rect[0] + 9.0,
             eq_btn_rect[1] + 9.0,
             18.0,
-            my3_accent(),
+            color::block::FACE,
         );
         self.targets.push((eq_btn_rect, Action::OpenControlEditor));
 
         let brand_w = (eq_btn_rect[0] - 66.0).max(70.0);
-        ui.text(Face::SemiBold, 16.0, 54.0, 10.0, my3_text(), "Horizon");
+        ui.text(Face::Pixel, 16.0, 54.0, 10.0, color::TEXT, "Horizon");
         let version_line = format!("Android {}", crate::backend::VERSION);
         let fitted_version = ui.fit_text(Face::Regular, 11.0, &version_line, brand_w);
         ui.text(
@@ -1149,16 +1223,30 @@ impl Launcher {
             11.0,
             54.0,
             30.0,
-            my3_muted(),
+            color::MUTED,
             &fitted_version,
         );
 
         // Top-right Account Selector Pill with circular avatar head, username, and chevron.
-        ui.rounded(pill_x, pill_y, pill_w, pill_h, pill_h * 0.5, my3_surface());
-        ui.border(pill_x, pill_y, pill_w, pill_h, pill_h * 0.5, my3_border());
+        ui.block(
+            pill_x,
+            pill_y,
+            pill_w,
+            pill_h,
+            color::block::BUTTON,
+            color::block::BUTTON_BEVEL,
+            color::block::LIP,
+        );
         ui.avatar_head_2d(pill_x + 6.0, pill_y + 4.0, 28.0, &account_name);
         if self.login.signed_in {
-            ui.rounded(pill_x + 26.0, pill_y + 24.0, 9.0, 9.0, 4.5, my3_bg());
+            ui.rounded(
+                pill_x + 26.0,
+                pill_y + 24.0,
+                9.0,
+                9.0,
+                4.5,
+                color::block::BUTTON,
+            );
             ui.rounded(
                 pill_x + 27.0,
                 pill_y + 25.0,
@@ -1168,13 +1256,13 @@ impl Launcher {
                 color::hex(0x59D98E, 255),
             );
         }
-        let fitted_acct = ui.fit_text(Face::Medium, 13.5, &account_name, pill_w - 62.0);
+        let fitted_acct = ui.fit_text(Face::Pixel, 13.5, &account_name, pill_w - 62.0);
         ui.text(
-            Face::Medium,
+            Face::Pixel,
             13.5,
             pill_x + 37.0,
             pill_y + 8.0,
-            my3_text(),
+            color::TEXT,
             &fitted_acct,
         );
         ui.icon(
@@ -1182,12 +1270,12 @@ impl Launcher {
             pill_x + pill_w - 22.0,
             pill_y + 12.0,
             12.0,
-            my3_muted(),
+            color::MUTED,
         );
         self.targets
             .push(([pill_x, pill_y, pill_w, pill_h], Action::Account));
 
-        // ---- Left Vertical Navigation Rail + Smooth Gliding Active Pill ----
+        // ---- Left Vertical Navigation Rail + Smooth Gliding Active Block ----
         let sidebar_w = if w < 560.0 { 136.0 } else { 184.0 };
         ui.rounded(
             sidebar_w,
@@ -1195,7 +1283,7 @@ impl Launcher {
             1.0,
             (h - 68.0).max(10.0),
             0.0,
-            my3_border(),
+            color::block::OUTLINE,
         );
         let nav_start_y = 62.0;
         let nav_step = ((h - nav_start_y - 14.0) / 6.0).clamp(36.0, 48.0);
@@ -1218,14 +1306,15 @@ impl Launcher {
             self.catalog.sections,
         );
 
-        // Draw gliding MY3 active indicator pill
-        ui.rounded(
+        // Draw gliding active indicator block
+        ui.block(
             10.0,
             self.anim.nav_pill_y,
             sidebar_w - 20.0,
             nav_h,
-            nav_h * 0.5,
-            my3_nav_active(),
+            color::block::FACE,
+            color::block::FACE_BEVEL,
+            color::block::FACE_LIP,
         );
 
         for (i, page) in Page::ALL.iter().enumerate() {
@@ -1233,7 +1322,11 @@ impl Launcher {
             let ny = nav_start_y + i as f32 * nav_step;
             let nw = sidebar_w - 20.0;
             let selected = *page == self.catalog.page;
-            let fg = if selected { my3_text() } else { my3_muted() };
+            let fg = if selected {
+                color::block::ON_FACE
+            } else {
+                color::MUTED
+            };
             ui.icon(
                 page_icon(*page),
                 nx + 14.0,
@@ -1241,9 +1334,9 @@ impl Launcher {
                 17.0,
                 fg,
             );
-            let label = ui.fit_text(Face::Medium, 13.5, page.name(), nw - 42.0);
+            let label = ui.fit_text(Face::Pixel, 13.5, page.name(), nw - 42.0);
             ui.text(
-                Face::Medium,
+                Face::Pixel,
                 13.5,
                 nx + 39.0,
                 ny + (nav_h - 19.0) * 0.5,
@@ -1389,15 +1482,22 @@ impl Launcher {
             } else {
                 let card_y = 66.0 + slide_y;
                 let card_h = (h - 178.0).clamp(220.0, 280.0);
-                ui.rounded(content_x, card_y, content_w, card_h, 20.0, my3_surface());
-                ui.border(content_x, card_y, content_w, card_h, 20.0, my3_border());
+                ui.block(
+                    content_x,
+                    card_y,
+                    content_w,
+                    card_h,
+                    color::block::PANEL,
+                    color::block::BEVEL,
+                    color::block::LIP,
+                );
 
                 ui.text(
-                    Face::SemiBold,
+                    Face::Pixel,
                     23.0,
                     content_x + 22.0,
                     card_y + 18.0,
-                    my3_text(),
+                    color::TEXT,
                     if installed {
                         "Ready to play"
                     } else if compact {
@@ -1411,7 +1511,7 @@ impl Launcher {
                     14.0,
                     content_x + 22.0,
                     card_y + 52.0,
-                    my3_muted(),
+                    color::MUTED,
                     &format!(
                         "Minecraft 26.3 • Profile {} • {}",
                         self.catalog.config.profile + 1,
@@ -1420,11 +1520,11 @@ impl Launcher {
                 );
 
                 ui.text(
-                    Face::SemiBold,
+                    Face::Pixel,
                     15.0,
                     content_x + 22.0,
                     card_y + 84.0,
-                    my3_text(),
+                    color::TEXT,
                     "Horizon Android is becoming Starling",
                 );
                 let notice = "Some Horizon Android features are still being transferred and merged. Export your worlds through Android Files (SAF) before moving.";
@@ -1445,7 +1545,7 @@ impl Launcher {
                             font_size,
                             content_x + 22.0,
                             line_y,
-                            my3_muted(),
+                            color::MUTED,
                             &line,
                         );
                         line_y += 15.0;
@@ -1462,7 +1562,7 @@ impl Launcher {
                         font_size,
                         content_x + 22.0,
                         line_y,
-                        my3_muted(),
+                        color::MUTED,
                         &line,
                     );
                 }
@@ -1490,6 +1590,15 @@ impl Launcher {
                     false,
                 );
                 let btn_y = (h - 92.0).max(card_y + card_h + 12.0);
+                // The desktop Blocks home opens on a pixel landscape
+                // banner; the same picture fills the space between the
+                // card and the main action when the screen is tall
+                // enough to hold it.
+                let band_y = card_y + card_h + 12.0;
+                let band_h = (btn_y - 12.0 - band_y).min(148.0);
+                if band_h >= 84.0 {
+                    landscape(&mut ui, content_x, band_y, content_w, band_h);
+                }
                 let play_w = content_w.min(256.0);
                 let is_launching = self.launching || self.session_worker.is_some();
                 if is_launching && installed {
@@ -1551,11 +1660,11 @@ impl Launcher {
         } else if page.is_catalog() {
             let header_y = 62.0 + slide_y;
             ui.text(
-                Face::SemiBold,
+                Face::Pixel,
                 19.0,
                 content_x,
                 header_y,
-                my3_text(),
+                color::TEXT,
                 if page == Page::Mods {
                     "Mods"
                 } else if page == Page::Shaders {
@@ -1724,10 +1833,17 @@ impl Launcher {
                 if y + 64.0 < top || y > bottom {
                     continue;
                 }
-                ui.rounded(content_x, y, content_w, 64.0, 14.0, my3_card_bg());
-                ui.border(content_x, y, content_w, 64.0, 14.0, my3_card_border());
+                ui.block(
+                    content_x,
+                    y,
+                    content_w,
+                    64.0,
+                    color::block::PANEL,
+                    color::block::BEVEL,
+                    color::block::LIP,
+                );
 
-                // Project icon: fetched Modrinth PFP if available, else MY3 vector icon badge.
+                // Project icon: fetched Modrinth PFP if available, else vector icon badge.
                 let drawn_icon = if let Some((iw, ih, rgba)) = self.catalog.icons.get(*id) {
                     ui.image(id, *iw, *ih, rgba, content_x + 10.0, y + 10.0, 44.0, 44.0)
                 } else {
@@ -1739,21 +1855,21 @@ impl Launcher {
                         y + 10.0,
                         44.0,
                         44.0,
-                        12.0,
-                        my3_accent_soft(),
+                        0.0,
+                        color::block::WELL,
                     );
                     ui.icon(
                         fallback_icon,
                         content_x + 21.0,
                         y + 21.0,
                         22.0,
-                        my3_accent(),
+                        color::block::FACE,
                     );
                 }
 
                 // Badge chip ("Built-in • Tap for info")
                 let text_max = (content_w - 190.0).max(80.0);
-                let fitted_title = ui.fit_text(Face::SemiBold, 15.0, title, text_max);
+                let fitted_title = ui.fit_text(Face::Pixel, 15.0, title, text_max);
                 let rich_desc = self
                     .catalog
                     .enriched_summaries
@@ -1761,11 +1877,11 @@ impl Launcher {
                     .map_or(*description, String::as_str);
                 let summary = ui.fit_text(Face::Regular, 12.5, rich_desc, text_max);
                 ui.text(
-                    Face::SemiBold,
+                    Face::Pixel,
                     15.0,
                     content_x + 64.0,
                     y + 8.0,
-                    my3_text(),
+                    color::TEXT,
                     &fitted_title,
                 );
                 ui.text(
@@ -1773,7 +1889,7 @@ impl Launcher {
                     12.5,
                     content_x + 64.0,
                     y + 28.0,
-                    my3_muted(),
+                    color::MUTED,
                     &summary,
                 );
                 ui.text(
@@ -1781,7 +1897,7 @@ impl Launcher {
                     11.0,
                     content_x + 64.0,
                     y + 45.0,
-                    my3_accent(),
+                    color::block::FACE,
                     "Horizon Built-in • Tap for versions, Modrinth info & screenshots",
                 );
                 if let Some(c) = ui.clip_rect(card_rect) {
@@ -1809,10 +1925,17 @@ impl Launcher {
                 if y + 64.0 < top || y > bottom {
                     continue;
                 }
-                ui.rounded(content_x, y, content_w, 64.0, 14.0, my3_card_bg());
-                ui.border(content_x, y, content_w, 64.0, 14.0, my3_card_border());
+                ui.block(
+                    content_x,
+                    y,
+                    content_w,
+                    64.0,
+                    color::block::PANEL,
+                    color::block::BEVEL,
+                    color::block::LIP,
+                );
 
-                // Project icon: fetched RGBA icon if ready, else MY3 vector icon badge.
+                // Project icon: fetched RGBA icon if ready, else vector icon badge.
                 let drawn_icon = if let Some((iw, ih, rgba)) = self.catalog.icons.get(&p.id) {
                     ui.image(
                         &p.id,
@@ -1833,20 +1956,20 @@ impl Launcher {
                         y + 10.0,
                         44.0,
                         44.0,
-                        12.0,
-                        my3_accent_soft(),
+                        0.0,
+                        color::block::WELL,
                     );
                     ui.icon(
                         fallback_icon,
                         content_x + 21.0,
                         y + 21.0,
                         22.0,
-                        my3_accent(),
+                        color::block::FACE,
                     );
                 }
 
                 let text_max = (content_w - 190.0).max(80.0);
-                let title = ui.fit_text(Face::SemiBold, 15.0, &p.title, text_max);
+                let title = ui.fit_text(Face::Pixel, 15.0, &p.title, text_max);
                 let rich_summary = if crate::catalog::source_only_mod(p) {
                     "Native .hnmod temporarily unsupported on Android; built-in mods are available."
                 } else {
@@ -1855,11 +1978,11 @@ impl Launcher {
                 };
                 let summary = ui.fit_text(Face::Regular, 12.5, rich_summary, text_max);
                 ui.text(
-                    Face::SemiBold,
+                    Face::Pixel,
                     15.0,
                     content_x + 64.0,
                     y + 8.0,
-                    my3_text(),
+                    color::TEXT,
                     &title,
                 );
                 ui.text(
@@ -1867,7 +1990,7 @@ impl Launcher {
                     12.5,
                     content_x + 64.0,
                     y + 28.0,
-                    my3_muted(),
+                    color::MUTED,
                     &summary,
                 );
                 let meta_tag = if p.downloads > 0 {
@@ -1888,7 +2011,7 @@ impl Launcher {
                     11.0,
                     content_x + 64.0,
                     y + 45.0,
-                    my3_accent(),
+                    color::block::FACE,
                     &fitted_meta,
                 );
                 if let Some(c) = ui.clip_rect(card_rect) {
@@ -2025,8 +2148,8 @@ impl Launcher {
             let height = bottom - top;
             let thumb = (height * height / (height + maximum)).max(20.0).min(height);
             let y = top + (height - thumb) * (scroll / maximum).clamp(0.0, 1.0);
-            ui.rounded(w - 10.0, top, 4.0, height, 2.0, my3_border());
-            ui.rounded(w - 10.0, y, 4.0, thumb, 2.0, my3_muted());
+            ui.rounded(w - 10.0, top, 4.0, height, 2.0, color::block::OUTLINE);
+            ui.rounded(w - 10.0, y, 4.0, thumb, 2.0, color::block::FACE);
         }
         if self.catalog.fm_modal.is_some() {
             self.draw_fm_modal(&mut ui, w, h, ime_top_dp);
@@ -2085,7 +2208,14 @@ impl Launcher {
         if let Some(index) = self.focus
             && let Some(([x, y, w, h], _)) = self.targets.get(index)
         {
-            ui.border(*x - 2.0, *y - 2.0, *w + 4.0, *h + 4.0, 12.0, my3_accent());
+            ui.border(
+                *x - 2.0,
+                *y - 2.0,
+                *w + 4.0,
+                *h + 4.0,
+                0.0,
+                color::block::FACE,
+            );
             self.cursor = (
                 f64::from((x + w / 2.0) * ui.density),
                 f64::from((y + h / 2.0) * ui.density),
@@ -2107,8 +2237,8 @@ impl Launcher {
                     *y,
                     *w,
                     *h,
-                    (*h * 0.42).clamp(10.0, 22.0),
-                    horizon_client::hud::rgba(255, 255, 255, 36),
+                    0.0,
+                    horizon_client::hud::rgba(255, 255, 255, 48),
                 );
             }
         }
@@ -2123,8 +2253,8 @@ impl Launcher {
                 *y,
                 *w,
                 *h,
-                (*h * 0.42).clamp(10.0, 22.0),
-                horizon_client::hud::rgba(255, 255, 255, 36),
+                0.0,
+                horizon_client::hud::rgba(255, 255, 255, 48),
             );
         }
         crate::documents::draw_ui(&mut ui);
@@ -6193,6 +6323,9 @@ impl Launcher {
                 self.catalog.page = page;
                 self.catalog.scroll = 0.0;
                 self.error = None;
+                // A status belongs to the page that produced it (a search
+                // result, a settings note); do not carry it across tabs.
+                self.catalog.status.clear();
                 self.catalog.offset = 0;
                 self.catalog.browse(&self.home);
             }

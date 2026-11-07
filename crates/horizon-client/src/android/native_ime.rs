@@ -618,6 +618,27 @@ impl Ui {
                 } else {
                     env.call_method(&self.native, "releasePointerCapture", "()V", &[])?;
                 }
+                // Some Android skins keep drawing the mouse pointer over a
+                // captured window. Giving the view the null pointer icon
+                // leaves them nothing to draw; releasing capture restores
+                // the default icon (a null icon means the system default).
+                let icon = if capture {
+                    env.call_static_method(
+                        "android/view/PointerIcon",
+                        "getSystemIcon",
+                        "(Landroid/content/Context;I)Landroid/view/PointerIcon;",
+                        &[JValue::Object(&self.activity), JValue::Int(0)],
+                    )?
+                    .l()?
+                } else {
+                    JObject::null()
+                };
+                env.call_method(
+                    &self.native,
+                    "setPointerIcon",
+                    "(Landroid/view/PointerIcon;)V",
+                    &[JValue::Object(&icon)],
+                )?;
             }
         }
         Ok(())

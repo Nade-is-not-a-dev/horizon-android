@@ -346,16 +346,15 @@ impl Login {
             ui.h,
             color::with_alpha(theme.bg_solid, 0.65 * modal_t),
         );
-        ui.rounded(
-            x + 2.0,
-            y + 8.0,
+        ui.block(
+            x,
+            y,
             w,
             h,
-            26.0,
-            color::hex(0x000000, (90.0 * modal_t) as u8),
+            color::block::PANEL,
+            color::block::BEVEL,
+            color::block::LIP,
         );
-        ui.rounded(x, y, w, h, 26.0, theme.bg_solid);
-        ui.border(x, y, w, h, 26.0, login_border());
 
         let (title, subtitle): (&str, String) = if self.providers {
             ("Accounts", "Choose how you want to play".into())
@@ -394,57 +393,59 @@ impl Login {
         };
         if !self.providers {
             let back = [x + 16.0, y + 16.0, 38.0, 38.0];
-            ui.rounded(
+            ui.block(
                 back[0],
                 back[1],
                 back[2],
                 back[3],
-                12.0,
-                login_surface_high(),
+                color::block::BUTTON,
+                color::block::BUTTON_BEVEL,
+                color::block::LIP,
             );
             ui.icon(
                 Icon::ArrowLeft,
                 back[0] + 10.0,
                 back[1] + 10.0,
                 18.0,
-                login_text(),
+                color::TEXT,
             );
             targets.push((back, Action::Account));
         }
         let close = [x + w - 54.0, y + 16.0, 38.0, 38.0];
-        ui.rounded(
+        ui.block(
             close[0],
             close[1],
             close[2],
             close[3],
-            12.0,
-            login_surface_high(),
+            color::block::BUTTON,
+            color::block::BUTTON_BEVEL,
+            color::block::LIP,
         );
         ui.icon(
             Icon::Close,
             close[0] + 11.0,
             close[1] + 11.0,
             16.0,
-            login_text(),
+            color::TEXT,
         );
         targets.push((close, Action::CloseLogin));
         let text_x = if self.providers { x + 22.0 } else { x + 64.0 };
-        ui.text(Face::SemiBold, 20.0, text_x, y + 14.0, login_text(), title);
+        ui.text(Face::Pixel, 20.0, text_x, y + 14.0, color::TEXT, title);
         let fitted = ui.fit_text(
             Face::Regular,
             12.5,
             &subtitle,
             (x + w - 70.0 - text_x).max(70.0),
         );
-        ui.text(
-            Face::Regular,
-            12.5,
-            text_x,
-            y + 42.0,
-            login_muted(),
-            &fitted,
+        ui.text(Face::Regular, 12.5, text_x, y + 42.0, color::MUTED, &fitted);
+        ui.rounded(
+            x + 20.0,
+            y + 72.0,
+            w - 40.0,
+            1.0,
+            0.5,
+            color::block::OUTLINE,
         );
-        ui.rounded(x + 20.0, y + 72.0, w - 40.0, 1.0, 0.5, login_border());
 
         let content_y = y + 88.0;
         let content_h = (y + h - 20.0 - content_y).max(60.0);

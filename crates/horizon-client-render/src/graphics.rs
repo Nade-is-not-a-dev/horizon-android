@@ -427,7 +427,10 @@ impl Default for Graphics {
             lod_distance: 0,
             far_detail: FarDetail::Full,
             cave_culling: true,
-            entity_culling: false,
+            // The culler is conservative (vanilla packs only, a bounded
+            // budget, and it only ever skips mesh submission), while a
+            // phone's GPU is the scarce resource: Android defaults it on.
+            entity_culling: cfg!(target_os = "android"),
             chunk_updates: 0,
             upload_budget_kib: 0,
             texture_budget_mib: 0,
@@ -437,7 +440,15 @@ impl Default for Graphics {
             animated_textures: true,
             dither_cutout_mips: false,
             present_mode: PresentMode::Auto,
-            pacing: Pacing::Efficient,
+            // Efficient pacing sleeps the whole wait, which lands frames
+            // unevenly under Android's sleep granularity: menus judder and
+            // accumulated mouse motion arrives in uneven batches. Android
+            // defaults to vanilla's sleep-then-spin limiter instead.
+            pacing: if cfg!(target_os = "android") {
+                Pacing::Precise
+            } else {
+                Pacing::Efficient
+            },
             workers: 0,
             overlay: Overlay::Off,
             resolution_scale: 100,

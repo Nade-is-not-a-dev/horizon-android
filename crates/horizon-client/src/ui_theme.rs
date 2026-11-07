@@ -62,6 +62,42 @@ pub mod color {
     pub const MUTED: u32 = hex(P.ink_soft, 255);
     pub const ACCENT: u32 = hex(P.accent, 255);
     pub const ON_ACCENT: u32 = hex(P.on_accent, 255);
+    /// The desktop launcher's blocky palette (`horizon_theme::BLOCKS_DARK`):
+    /// solid plates with a 2 px outline, a light bevel on top and a darker
+    /// lip below. Shells that draw blocks (the Android launcher) take their
+    /// fills from here instead of the translucent plates above.
+    pub mod block {
+        use super::hex;
+        use horizon_theme::BLOCKS_DARK as B;
+        /// The page behind everything.
+        pub const PAGE: u32 = hex(B.page, 255);
+        /// The darker side tone: the backdrop's alternate checker cell.
+        pub const SIDE: u32 = hex(B.side, 255);
+        /// Panels: rows, cards, dialogs.
+        pub const PANEL: u32 = hex(B.panel, 255);
+        /// A selected or hovered panel or row.
+        pub const RAISED: u32 = hex(B.raised, 255);
+        /// Buttons and the chosen segment.
+        pub const BUTTON: u32 = hex(B.button, 255);
+        /// A button's top bevel.
+        pub const BUTTON_BEVEL: u32 = hex(B.button_bevel, 255);
+        /// Sunk wells: fields, tracks, switch boxes.
+        pub const WELL: u32 = hex(B.well, 255);
+        /// The light top edge of a panel.
+        pub const BEVEL: u32 = hex(B.bevel, 255);
+        /// The darker bottom edge of a panel or button.
+        pub const LIP: u32 = hex(B.lip, 255);
+        /// The 2 px outline around panels, buttons and wells.
+        pub const OUTLINE: u32 = hex(B.outline, 255);
+        /// The main action's face (Play, Install, Download).
+        pub const FACE: u32 = hex(B.face, 255);
+        /// The main action's top bevel.
+        pub const FACE_BEVEL: u32 = hex(B.face_bevel, 255);
+        /// The main action's bottom lip.
+        pub const FACE_LIP: u32 = hex(B.face_lip, 255);
+        /// Text on the main action's face.
+        pub const ON_FACE: u32 = hex(B.on_face, 255);
+    }
     pub fn with_alpha(c: u32, a: f32) -> u32 {
         let base = (c >> 24) as f32;
         (c & 0x00ff_ffff) | ((base * a.clamp(0.0, 1.0)).round() as u32) << 24
@@ -88,6 +124,9 @@ pub enum Face {
     SemiBold,
     /// Counts, timestamps and the boot screen's console lines.
     Mono,
+    /// The design system's pixel face (Pixelify Sans): headings and button
+    /// labels in shells that draw the launcher's blocky style.
+    Pixel,
 }
 
 /// Vector icons used by the Material You 3 Android launcher navigation rail,
@@ -149,7 +188,7 @@ pub enum Icon {
 }
 
 struct Fonts {
-    faces: [FontRef<'static>; 4],
+    faces: [FontRef<'static>; 5],
 }
 impl Fonts {
     fn load() -> Self {
@@ -160,6 +199,7 @@ impl Fonts {
                 f(horizon_theme::fonts::GEIST_MEDIUM),
                 f(horizon_theme::fonts::GEIST_SEMIBOLD),
                 f(horizon_theme::fonts::GEIST_MONO),
+                f(horizon_theme::fonts::PIXEL_SEMIBOLD),
             ],
         }
     }
@@ -757,6 +797,13 @@ impl Cache {
 /// One frame of design-system drawing, in dp: the
 /// launcher's logical pixels, scaled so the screen reads like the launcher's
 /// 1040x700 window at any size.
+/// `c` (in the HUD's packed encoding) shifted by `d` on every colour
+/// channel; negative darkens. The alpha byte is kept.
+fn shade(c: u32, d: i32) -> u32 {
+    let chan = |shift: u32| ((c >> shift & 0xff) as i32 + d).clamp(0, 255) as u32;
+    c & 0xff00_0000 | chan(16) << 16 | chan(8) << 8 | chan(0)
+}
+
 pub struct Ui<'a> {
     pub atlas: &'a HudAtlas,
     pub batch: &'a mut HudBatch,
@@ -1401,6 +1448,74 @@ impl<'a> Ui<'a> {
             self.rounded(cx, cy, 1.8, ch, 0.9, caret_col);
         }
         [x, y, w, h]
+    }
+    /// A design-system block (`horizon_theme::Blocks`): a solid fill with
+    /// square corners, a 2 dp outline, a bevel strip across the top and a
+    /// lip strip along the bottom. The outline sits outside `x, y, w, h`,
+    /// so the face itself keeps the caller's exact geometry.
+    pub fn block(&mut self, x: f32, y: f32, w: f32, h: f32, fill: u32, bevel: u32, lip: u32) {
+        self.rounded(
+            x - 2.0,
+            y - 2.0,
+            w + 4.0,
+            h + 4.0,
+            0.0,
+            color::block::OUTLINE,
+        );
+        self.rounded(x, y, w, h, 0.0, fill);
+        let bev = 2.0f32.min(h * 0.25);
+        if bev >= 1.0 {
+            self.rounded(x, y, w, bev, 0.0, bevel);
+        }
+        let lp = 4.0f32.min(h * 0.34);
+        if lp >= 1.0 {
+            self.rounded(x, y + h - lp, w, lp, 0.0, lip);
+        }
+    }
+    /// The launcher backdrop: the stone texture the desktop Blocks pages
+    /// sit on — tiles in close shades of the page colour
+    /// (`horizon_theme::TILE_SHADES` lightness points, scaled to RGB
+    /// deltas), each tile's shade picked by a fixed hash of its position
+    /// so the pattern never moves between frames. Content draws over it
+    /// unchanged.
+    pub fn backdrop(&mut self) {
+        self.rounded(0.0, 0.0, self.w, self.h, 0.0, color::block::PAGE);
+        let cell = 26.0;
+        let cols = (self.w / cell).ceil() as u32;
+        let rows = (self.h / cell).ceil() as u32;
+        for cy in 0..rows {
+            for cx in 0..cols {
+                let hash = cx.wrapping_mul(73_856_093) ^ cy.wrapping_mul(19_349_663);
+                let points = horizon_theme::TILE_SHADES[(hash % 5) as usize] as i32;
+                if points != 0 {
+                    self.rounded(
+                        cx as f32 * cell,
+                        cy as f32 * cell,
+                        cell,
+                        cell,
+                        0.0,
+                        shade(color::block::PAGE, points * 5 / 2),
+                    );
+                }
+            }
+        }
+    }
+    /// A sunk block well (fields, tracks, switch boxes): an outlined dark
+    /// fill with a shadow strip under its top edge.
+    pub fn well(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.rounded(
+            x - 2.0,
+            y - 2.0,
+            w + 4.0,
+            h + 4.0,
+            0.0,
+            color::block::OUTLINE,
+        );
+        self.rounded(x, y, w, h, 0.0, color::block::WELL);
+        let shadow = 2.0f32.min(h * 0.25);
+        if shadow >= 1.0 {
+            self.rounded(x, y, w, shadow, 0.0, color::block::LIP);
+        }
     }
 
     // ---- text ----
