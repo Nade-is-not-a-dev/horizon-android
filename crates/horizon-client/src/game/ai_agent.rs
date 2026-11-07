@@ -225,7 +225,7 @@ impl Game<'_> {
         if jobs.send(job).is_ok() {
             self.ai_current = Some(instruction);
             self.ai_busy = true;
-            self.ai_say("[Agent] Siap, kukerjakan.");
+            self.ai_say("[Agent] Sending Request...");
         } else {
             self.ai_say("[Agent] Worker tidak tersedia.");
         }
@@ -334,6 +334,7 @@ fn run_ai_conversation(job: &AiJob) -> Result<String, String> {
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
+            "stream": false,
         });
         let response = http
             .post(&url)
@@ -350,8 +351,8 @@ fn run_ai_conversation(job: &AiJob) -> Result<String, String> {
         let text = response
             .into_string()
             .map_err(|e| format!("Balasan endpoint tidak terbaca: {e}"))?;
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|e| format!("Balasan endpoint bukan JSON yang valid: {e}"))?;
+        let value = parse_completion(&text)
+            .ok_or_else(|| "Balasan endpoint bukan JSON yang valid.".to_owned())?;
         let message = value
             .pointer("/choices/0/message")
             .cloned()
@@ -409,6 +410,81 @@ fn run_ai_conversation(job: &AiJob) -> Result<String, String> {
         }
     }
     Ok("Sudah mencapai batas langkah untuk perintah ini, jadi berhenti di sini.".to_owned())
+}
+
+/// Extract a chat completion from an endpoint's response body. Plain
+/// JSON is the norm, but some proxies answer with a full JSON object
+/// followed by stream framing (`data: [DONE]`), and some force real
+/// server-sent events; accept all three.
+fn parse_completion(text: &str) -> Option<Value> {
+    // One JSON value, ignoring whatever trails it.
+    if let Some(Ok(value)) = serde_json::Deserializer::from_str(text)
+        .into_iter::<Value>()
+        .next()
+        && value.get("choices").is_some()
+    {
+        return Some(value);
+    }
+    // Real SSE: merge the delta chunks into one message.
+    let mut content = String::new();
+    let mut calls: Vec<Value> = Vec::new();
+    let mut saw_chunk = false;
+    for line in text.lines() {
+        let Some(payload) = line.trim().strip_prefix("data:") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        let Ok(chunk) = serde_json::from_str::<Value>(payload) else {
+            continue;
+        };
+        let Some(delta) = chunk.pointer("/choices/0/delta") else {
+            continue;
+        };
+        saw_chunk = true;
+        if let Some(part) = delta.get("content").and_then(Value::as_str) {
+            content += part;
+        }
+        if let Some(list) = delta.get("tool_calls").and_then(Value::as_array) {
+            for call in list {
+                let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                while calls.len() <= index {
+                    calls.push(json!({
+                        "id": "",
+                        "type": "function",
+                        "function": { "name": "", "arguments": "" },
+                    }));
+                }
+                let slot = &mut calls[index];
+                if let Some(id) = call.get("id").and_then(Value::as_str)
+                    && !id.is_empty()
+                {
+                    slot["id"] = json!(id);
+                }
+                if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                    let current = slot["function"]["name"].as_str().unwrap_or("").to_owned();
+                    slot["function"]["name"] = json!(format!("{current}{name}"));
+                }
+                if let Some(args) = call.pointer("/function/arguments").and_then(Value::as_str) {
+                    let current = slot["function"]["arguments"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned();
+                    slot["function"]["arguments"] = json!(format!("{current}{args}"));
+                }
+            }
+        }
+    }
+    if !saw_chunk {
+        return None;
+    }
+    let mut message = json!({ "role": "assistant", "content": content });
+    if !calls.is_empty() {
+        message["tool_calls"] = json!(calls);
+    }
+    Some(json!({ "choices": [{ "message": message }] }))
 }
 
 /// Translate one model tool call into a control command line.
