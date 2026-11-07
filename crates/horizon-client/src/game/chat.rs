@@ -886,6 +886,11 @@ impl Game<'_> {
             return;
         }
         self.ui.chat.add_recent(&message);
+        // The built-in AI agent's own command never leaves the client.
+        if let Some(arg) = super::ai_agent::agent_command_arg(&message) {
+            self.ai_agent_command(arg);
+            return;
+        }
         // On a server (single player's own included) the server runs it,
         // unless a client mod owns the command.
         if self.remote.is_some() {

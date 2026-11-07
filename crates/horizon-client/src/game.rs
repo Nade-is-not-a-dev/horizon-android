@@ -53,6 +53,7 @@ mod advancements;
 mod advancements_screen;
 mod agent;
 mod agent_settings;
+mod ai_agent;
 mod allays;
 mod android_bundled;
 #[cfg(target_os = "android")]
@@ -2651,6 +2652,25 @@ struct Game<'a> {
     agent_control_on: bool,
     /// When an agent's last command came.
     agent_last: Option<Instant>,
+    /// The built-in AI agent (`game/ai_agent.rs`): job channel to its
+    /// worker thread, the template sender jobs answer through, and its
+    /// inbox on this thread.
+    ai_job_tx: Option<std::sync::mpsc::Sender<ai_agent::AiJob>>,
+    ai_to_game_tx: Option<std::sync::mpsc::Sender<ai_agent::AiToGame>>,
+    ai_inbox: Option<std::sync::mpsc::Receiver<ai_agent::AiToGame>>,
+    /// Control replies of agent tool calls that complete on a later tick.
+    ai_pending_exec: Vec<(
+        std::sync::mpsc::Receiver<String>,
+        std::sync::mpsc::Sender<String>,
+    )>,
+    /// A `/agent` instruction waiting for the next tick to start.
+    ai_request: Option<String>,
+    /// The instruction the running job is working on (for the history).
+    ai_current: Option<String>,
+    ai_busy: bool,
+    /// Recent `/agent` exchanges (user/assistant pairs) for the model.
+    ai_history: Vec<serde_json::Value>,
+    ai_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     frame_stats: horizon_client::control::FrameStats,
     /// This play session's frame and tick times, for opt-in performance statistics.
     perf: horizon_client::telemetry::Session,
@@ -18358,6 +18378,7 @@ impl Game<'_> {
         }
         self.tick_server_packs();
         self.poll_control(event_loop);
+        self.poll_ai_agent(event_loop);
         if self.pending_save.is_some() {
             return;
         }
@@ -18781,6 +18802,15 @@ impl<'a> Game<'a> {
             control: None,
             agent_control_on: false,
             agent_last: None,
+            ai_job_tx: None,
+            ai_to_game_tx: None,
+            ai_inbox: None,
+            ai_pending_exec: Vec::new(),
+            ai_request: None,
+            ai_current: None,
+            ai_busy: false,
+            ai_history: Vec::new(),
+            ai_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             frame_stats: Default::default(),
             perf: Default::default(),
             pending_screenshot: None,
