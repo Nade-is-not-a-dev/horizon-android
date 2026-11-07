@@ -22,7 +22,7 @@ use std::sync::mpsc::{Sender, channel};
 use std::time::Duration;
 
 /// Tool-call rounds per instruction before the agent must wrap up.
-const MAX_TOOL_ROUNDS: usize = 8;
+const MAX_TOOL_ROUNDS: usize = 12;
 /// How long the worker waits for one game command (long `goto`s included).
 const EXEC_TIMEOUT: Duration = Duration::from_secs(180);
 /// Per-request HTTP timeout.
@@ -46,7 +46,10 @@ text, no markdown. \
 5. If a tool returns an error, read it and adjust; never repeat the \
 exact same failing call. \
 6. You are the player's character: moving, breaking and placing blocks \
-changes their world, so stay on the task they gave you.";
+changes their world, so stay on the task they gave you. \
+7. When an action succeeded, do not repeat it; verify with state or \
+looking_at instead. \
+8. Copy coordinates, names and ids exactly from tool results.";
 
 pub(super) struct AiConfig {
     endpoint: String,
@@ -336,27 +339,7 @@ fn run_ai_conversation(job: &AiJob) -> Result<String, String> {
             "tool_choice": "auto",
             "stream": false,
         });
-        let response = http
-            .post(&url)
-            .set("Authorization", &format!("Bearer {}", job.config.api_key))
-            .set("Content-Type", "application/json")
-            .send_string(&body.to_string())
-            .map_err(|e| match e {
-                ureq::Error::Status(code, response) => {
-                    let detail = response.into_string().unwrap_or_default();
-                    format!("Endpoint menolak permintaan (HTTP {code}): {detail}")
-                }
-                ureq::Error::Transport(e) => format!("Tidak bisa menghubungi endpoint: {e}"),
-            })?;
-        let text = response
-            .into_string()
-            .map_err(|e| format!("Balasan endpoint tidak terbaca: {e}"))?;
-        let value = parse_completion(&text)
-            .ok_or_else(|| "Balasan endpoint bukan JSON yang valid.".to_owned())?;
-        let message = value
-            .pointer("/choices/0/message")
-            .cloned()
-            .ok_or_else(|| "Endpoint tidak mengembalikan pesan.".to_owned())?;
+        let message = fetch_message(&http, &url, &job.config.api_key, &body)?;
         messages.push(message.clone());
 
         let calls = message
@@ -409,7 +392,62 @@ fn run_ai_conversation(job: &AiJob) -> Result<String, String> {
             }));
         }
     }
-    Ok("Sudah mencapai batas langkah untuk perintah ini, jadi berhenti di sini.".to_owned())
+    // Out of tool rounds: one last call without tools, so the player
+    // gets a summary of what happened instead of a dead end.
+    messages.push(json!({
+        "role": "user",
+        "content": "(Step limit reached. Reply with a brief summary of what you did and the result. Do not call any tools.)",
+    }));
+    let body = json!({
+        "model": job.config.model,
+        "messages": messages,
+        "stream": false,
+    });
+    match fetch_message(&http, &url, &job.config.api_key, &body) {
+        Ok(message) => {
+            let content = message
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("(selesai, tanpa keterangan)");
+            Ok(content.to_owned())
+        }
+        Err(_) => Ok(
+            "Sudah mencapai batas langkah untuk perintah ini, jadi berhenti di sini.".to_owned(),
+        ),
+    }
+}
+
+/// One chat-completions request: POST the body and return the first
+/// choice's message object.
+fn fetch_message(
+    http: &ureq::Agent,
+    url: &str,
+    api_key: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let response = http
+        .post(url)
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| match e {
+            ureq::Error::Status(code, response) => {
+                let detail = response.into_string().unwrap_or_default();
+                format!("Endpoint menolak permintaan (HTTP {code}): {detail}")
+            }
+            ureq::Error::Transport(e) => format!("Tidak bisa menghubungi endpoint: {e}"),
+        })?;
+    let text = response
+        .into_string()
+        .map_err(|e| format!("Balasan endpoint tidak terbaca: {e}"))?;
+    let value = parse_completion(&text)
+        .ok_or_else(|| "Balasan endpoint bukan JSON yang valid.".to_owned())?;
+    value
+        .pointer("/choices/0/message")
+        .cloned()
+        .ok_or_else(|| "Endpoint tidak mengembalikan pesan.".to_owned())
 }
 
 /// Extract a chat completion from an endpoint's response body. Plain
