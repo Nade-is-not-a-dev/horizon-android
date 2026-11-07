@@ -15,6 +15,7 @@ use super::Game;
 use super::event_loop::EventLoopCtl;
 use horizon_client::text::Text;
 use serde_json::{Value, json};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,7 +50,10 @@ exact same failing call. \
 changes their world, so stay on the task they gave you. \
 7. When an action succeeded, do not repeat it; verify with state or \
 looking_at instead. \
-8. Copy coordinates, names and ids exactly from tool results.";
+8. Copy coordinates, names and ids exactly from tool results. \
+9. When you need information you do not have (a crafting recipe, how \
+a mechanic works, a fact), use search_web and then read_page on the \
+most relevant result instead of guessing.";
 
 pub(super) struct AiConfig {
     endpoint: String,
@@ -370,20 +374,26 @@ fn run_ai_conversation(job: &AiJob) -> Result<String, String> {
                 .and_then(Value::as_str)
                 .unwrap_or("{}");
             let args: Value = serde_json::from_str(args_text).unwrap_or_else(|_| json!({}));
-            let result = match tool_line(name, &args) {
-                Ok(line) => {
-                    let (tx, rx) = channel::<String>();
-                    if job
-                        .to_game
-                        .send(AiToGame::Exec { line, reply: tx })
-                        .is_err()
-                    {
-                        return Err("Game sudah tertutup.".to_owned());
+            let result = if name == "search_web" || name == "read_page" {
+                // Web tools run here, on the worker thread; they never
+                // touch the game.
+                run_web_tool(&http, name, &args)
+            } else {
+                match tool_line(name, &args) {
+                    Ok(line) => {
+                        let (tx, rx) = channel::<String>();
+                        if job
+                            .to_game
+                            .send(AiToGame::Exec { line, reply: tx })
+                            .is_err()
+                        {
+                            return Err("Game sudah tertutup.".to_owned());
+                        }
+                        rx.recv_timeout(EXEC_TIMEOUT)
+                            .unwrap_or_else(|_| json!({ "error": "command timed out" }).to_string())
                     }
-                    rx.recv_timeout(EXEC_TIMEOUT)
-                        .unwrap_or_else(|_| json!({ "error": "command timed out" }).to_string())
+                    Err(e) => json!({ "error": e }).to_string(),
                 }
-                Err(e) => json!({ "error": e }).to_string(),
             };
             messages.push(json!({
                 "role": "tool",
@@ -777,5 +787,323 @@ fn ai_tools() -> Value {
             json!({ "text": string }),
             &["text"]
         ),
+        function(
+            "search_web",
+            "Search the web for information you do not have: crafting recipes, game mechanics, mob facts, real-world facts. Returns the top results with titles, links and snippets. Follow up with read_page on the most relevant result when a snippet is not enough.",
+            json!({ "query": string }),
+            &["query"]
+        ),
+        function(
+            "read_page",
+            "Fetch a web page (http/https) and return its readable text, e.g. a Minecraft Wiki article found with search_web.",
+            json!({ "url": string }),
+            &["url"]
+        ),
     ])
+}
+
+// ---- Web tools (run on the worker thread) ----
+
+const WEB_USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 16; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36";
+
+fn run_web_tool(http: &ureq::Agent, name: &str, args: &Value) -> String {
+    match name {
+        "search_web" => {
+            let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+            if query.trim().is_empty() {
+                return json!({ "error": "query is required" }).to_string();
+            }
+            web_search(http, query)
+        }
+        "read_page" => {
+            let url = args.get("url").and_then(Value::as_str).unwrap_or("");
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return json!({ "error": "url must be http(s)" }).to_string();
+            }
+            read_page(http, url)
+        }
+        _ => json!({ "error": "unknown web tool" }).to_string(),
+    }
+}
+
+/// DuckDuckGo Lite search, parsed with plain string scans (the lite
+/// page is a simple table). Returns {results:[{title,url,snippet}]}.
+fn web_search(http: &ureq::Agent, query: &str) -> String {
+    let url = format!(
+        "https://lite.duckduckgo.com/lite/?q={}",
+        percent_encode(query)
+    );
+    let html = match http
+        .get(&url)
+        .set("User-Agent", WEB_USER_AGENT)
+        .timeout(Duration::from_secs(25))
+        .call()
+    {
+        Ok(response) => response.into_string().unwrap_or_default(),
+        Err(ureq::Error::Status(code, _)) => {
+            return json!({ "error": format!("search returned HTTP {code}") }).to_string();
+        }
+        Err(ureq::Error::Transport(e)) => {
+            return json!({ "error": format!("search failed: {e}") }).to_string();
+        }
+    };
+    let mut links: Vec<(String, String)> = Vec::new();
+    let mut rest = html.as_str();
+    while let Some(pos) = rest.find("result-link") {
+        let window_start = pos.saturating_sub(600);
+        let window = &rest[window_start..pos];
+        let Some(href_at) = window.rfind("href=\"") else {
+            break;
+        };
+        let href_start = window_start + href_at + 6;
+        let Some(href_end) = rest[href_start..].find('"') else {
+            break;
+        };
+        let raw_url = &rest[href_start..href_start + href_end];
+        let after = &rest[pos..];
+        let Some(tag_end) = after.find('>') else {
+            break;
+        };
+        let text_start = pos + tag_end + 1;
+        let Some(text_end) = rest[text_start..].find("</a>") else {
+            break;
+        };
+        let title = html_to_text(&rest[text_start..text_start + text_end]);
+        links.push((unwrap_ddg_url(raw_url), title));
+        rest = &rest[text_start + text_end + 4..];
+        if links.len() >= 8 {
+            break;
+        }
+    }
+    let mut snippets: Vec<String> = Vec::new();
+    let mut rest = html.as_str();
+    while let Some(pos) = rest.find("result-snippet") {
+        let after = &rest[pos..];
+        let Some(tag_end) = after.find('>') else {
+            break;
+        };
+        let text_start = pos + tag_end + 1;
+        let Some(text_end) = rest[text_start..].find("</td>") else {
+            break;
+        };
+        snippets.push(html_to_text(&rest[text_start..text_start + text_end]));
+        rest = &rest[text_start + text_end + 5..];
+        if snippets.len() >= 8 {
+            break;
+        }
+    }
+    if links.is_empty() {
+        return json!({ "error": "no results found (blocked, or the results page changed shape)" })
+            .to_string();
+    }
+    let results: Vec<Value> = links
+        .iter()
+        .take(5)
+        .enumerate()
+        .map(|(i, (url, title))| {
+            json!({
+                "title": title,
+                "url": url,
+                "snippet": snippets.get(i).cloned().unwrap_or_default(),
+            })
+        })
+        .collect();
+    json!({ "query": query, "results": results }).to_string()
+}
+
+/// Fetch a page and return its readable text (scripts/styles/tags
+/// stripped, length capped).
+fn read_page(http: &ureq::Agent, url: &str) -> String {
+    let mut reader = match http
+        .get(url)
+        .set("User-Agent", WEB_USER_AGENT)
+        .timeout(Duration::from_secs(30))
+        .call()
+    {
+        Ok(response) => response.into_reader(),
+        Err(ureq::Error::Status(code, _)) => {
+            return json!({ "error": format!("page returned HTTP {code}") }).to_string();
+        }
+        Err(ureq::Error::Transport(e)) => {
+            return json!({ "error": format!("fetch failed: {e}") }).to_string();
+        }
+    };
+    let mut bytes = Vec::new();
+    if reader.take(512 * 1024).read_to_end(&mut bytes).is_err() {
+        return json!({ "error": "could not read the page body" }).to_string();
+    }
+    let raw = String::from_utf8_lossy(&bytes);
+    let plain = if raw.contains('<') {
+        html_to_text(&raw)
+    } else {
+        raw.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    let truncated = plain.chars().count() > 6000;
+    let text: String = plain.chars().take(6000).collect();
+    json!({ "url": url, "text": text, "truncated": truncated }).to_string()
+}
+
+/// DuckDuckGo result links wrap the real URL in a `uddg` parameter.
+fn unwrap_ddg_url(raw: &str) -> String {
+    let decoded = decode_entities(raw);
+    if let Some(at) = decoded.find("uddg=") {
+        let tail = &decoded[at + 5..];
+        let end = tail.find('&').unwrap_or(tail.len());
+        return percent_decode(&tail[..end]);
+    }
+    if let Some(stripped) = decoded.strip_prefix("//") {
+        return format!("https://{stripped}");
+    }
+    decoded
+}
+
+/// Very small HTML-to-text: drop script/style bodies, turn tags into
+/// spaces, decode common entities, collapse whitespace.
+fn html_to_text(html: &str) -> String {
+    let no_scripts = strip_tag_blocks(html, "script");
+    let no_styles = strip_tag_blocks(&no_scripts, "style");
+    let mut out = String::with_capacity(no_styles.len());
+    let mut in_tag = false;
+    for ch in no_styles.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    decode_entities(&out)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn strip_tag_blocks(html: &str, tag: &str) -> String {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    loop {
+        let Some(start) = find_ci(rest, &open) else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        match find_ci(after, &close) {
+            Some(end) => rest = &after[end + close.len()..],
+            None => break,
+        }
+    }
+    out
+}
+
+/// Case-insensitive substring search returning a byte index (needle is
+/// lowercase ASCII; indices stay on char boundaries).
+fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+    'outer: for (i, _) in hay.char_indices() {
+        let mut chars = hay[i..].chars();
+        for needle_ch in needle.chars() {
+            match chars.next() {
+                Some(hay_ch) if hay_ch.to_lowercase().eq(needle_ch.to_lowercase()) => {}
+                _ => continue 'outer,
+            }
+        }
+        return Some(i);
+    }
+    None
+}
+
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let Some(end) = tail.find(';') else {
+            out.push_str(tail);
+            return out;
+        };
+        let entity = &tail[1..end.min(10)];
+        let decoded: Option<String> = match entity {
+            "amp" => Some("&".to_owned()),
+            "lt" => Some("<".to_owned()),
+            "gt" => Some(">".to_owned()),
+            "quot" => Some("\"".to_owned()),
+            "apos" | "#39" => Some("'".to_owned()),
+            _ => entity
+                .strip_prefix('#')
+                .and_then(|digits| digits.parse::<u32>().ok())
+                .and_then(char::from_u32)
+                .map(|c| c.to_string()),
+        };
+        match decoded {
+            Some(s) => {
+                out.push_str(&s);
+                rest = &tail[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = |b: u8| -> Option<u8> {
+                    match b {
+                        b'0'..=b'9' => Some(b - b'0'),
+                        b'a'..=b'f' => Some(b - b'a' + 10),
+                        b'A'..=b'F' => Some(b - b'A' + 10),
+                        _ => None,
+                    }
+                };
+                match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push(hi * 16 + lo);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

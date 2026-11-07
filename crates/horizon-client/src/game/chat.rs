@@ -63,6 +63,9 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
+        // The built-in AI agent's /agent is a client command too: the
+        // chat box colours and completes it like the game's own.
+        names.push("agent");
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
